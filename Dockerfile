@@ -46,5 +46,4 @@ ENV HF_HOME=/app/.cache/huggingface
 
 EXPOSE 8000
 
-# uvicorn run — single worker is fine for now; we'll tune workers in Task 8.
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

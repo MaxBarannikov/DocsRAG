@@ -37,7 +37,7 @@ help:
 	@echo "    make install-vllm  - Install vllm + vllm-metal plugin into .venv (macOS arm64 only)"
 	@echo "    make vllm-start    - Start vllm-metal server (VLLM_MODEL / VLLM_PORT overridable)"
 	@echo "    make vllm-status   - Check vllm-metal status"
-	@echo "    make install-onnx  - Install ONNX Runtime + optimum into .venv (optional, for Task 9 work)"
+	@echo "    make install-onnx  - Install ONNX Runtime + optimum into .venv"
 	@echo "    make export-onnx   - Export embedder to ONNX FP32 (ONNX_MODEL=... overridable, FORCE=1 to re-export)"
 	@echo "    make quantize-onnx - Quantize ONNX FP32 → INT8 dynamic (FORCE=1 to re-quantize)"
 	@echo "    make bench-embedder - Latency + throughput benchmark across 4 embedder backends"
@@ -175,7 +175,7 @@ quantize-onnx:
 bench-embedder:
 	python benchmarks/bench_embedder.py
 
-# Trace the bge backbone to TorchScript .pt — bench-only artifact (Task 9 step 11).
+# Trace the bge backbone to TorchScript .pt — bench-only artifact.
 # Output: models/bge-small-en-v1.5.pt. Idempotent — pass FORCE=1 to re-trace.
 export-torchscript:
 	@python scripts/export_torchscript.py $(if $(FORCE),--force,)
@@ -215,7 +215,7 @@ reindex:
 
 # Reindex with ONNX FP32 backend → docsrag collection (parity-equivalent to pytorch).
 # Drops + recreates docsrag. Safe to run while API serves at EMBEDDER_BACKEND=pytorch
-# since FP32 ONNX and PyTorch vectors are numerically identical (Task 9 step 5).
+# since FP32 ONNX and PyTorch vectors are numerically identical.
 reindex-onnx:
 	EMBEDDER_BACKEND=onnx-fp32 python -m indexing.run_indexing --recreate --chunk-size $(CHUNK_SIZE) --overlap $(CHUNK_OVERLAP)
 	rm -f data/bm25_index.pkl

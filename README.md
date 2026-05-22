@@ -27,7 +27,7 @@ These are the non-obvious results from running the full eval pipeline. Each is t
 
 5. **Cosine + normalized embeddings is non-negotiable.** Forgetting `normalize_embeddings=True` in `sentence-transformers` silently breaks retrieval quality without obvious errors. The bug doesn't surface until you measure with Ragas.
 
-6. **ONNX on CPU beat PyTorch on MPS — and INT8 didn't fit.** The bge-small embedder is small enough (30M params) that ORT's per-call overhead + graph optimizations dominate over MPS's GPU dispatch overhead: **ONNX-CPU-FP32 single-query latency is 3.2× faster than PyTorch-MPS** (1.7 ms vs 5.5 ms p50), with byte-identical retrieval (cosine parity = 1.0, Ragas Δ ≤ 0.01). The intuition "GPU should always win" is wrong for sub-100M models. Dynamic INT8 went the other way — `context_recall` dropped 0.070 (12.6% relative), well past the 0.05 acceptance budget, and the model got flagged as unusable for retrieval. INT8 noise is invisible on cosine-of-same-text (0.997) but compounds across top-k ranking. Both results are documented honestly in the [Task 9 section](#task-9--embedder-onnx-optimization) — the negative INT8 result is as informative as the FP32 win.
+6. **ONNX on CPU beat PyTorch on MPS — and INT8 didn't fit.** The bge-small embedder is small enough (30M params) that ORT's per-call overhead + graph optimizations dominate over MPS's GPU dispatch overhead: **ONNX-CPU-FP32 single-query latency is 3.2× faster than PyTorch-MPS** (1.7 ms vs 5.5 ms p50), with byte-identical retrieval (cosine parity = 1.0, Ragas Δ ≤ 0.01). The intuition "GPU should always win" is wrong for sub-100M models. Dynamic INT8 went the other way — `context_recall` dropped 0.070 (12.6% relative), well past the 0.05 acceptance budget, and the model got flagged as unusable for retrieval. INT8 noise is invisible on cosine-of-same-text (0.997) but compounds across top-k ranking. Both results are documented honestly in the [Embedder ONNX optimization section](#embedder-onnx-optimization) — the negative INT8 result is as informative as the FP32 win.
 
 ## Goals
 
@@ -249,7 +249,7 @@ make restart
 make health    # should show "embedder_backend": "onnx-fp32"
 ```
 
-See [Task 9 — Embedder ONNX optimization](#task-9--embedder-onnx-optimization) below for the numeric results and architectural decisions.
+See [Embedder ONNX optimization](#embedder-onnx-optimization) below for the numeric results and architectural decisions.
 
 ## Troubleshooting
 
@@ -303,7 +303,7 @@ Response includes `answer`, `sources` (with `source_path`, `header_path`, `score
 
 ### `POST /agent/ask`
 
-Routes the question through the LangGraph agent (query rewriting + relevance grading + conditional retry). Same request/response shape as `/ask`. Use when precision matters more than recall (see Task 6 results below).
+Routes the question through the LangGraph agent (query rewriting + relevance grading + conditional retry). Same request/response shape as `/ask`. Use when precision matters more than recall.
 
 ### Cross-language support
 
@@ -336,7 +336,7 @@ make mlflow-ui                             # open MLflow UI
 
 `faithfulness` and `answer_relevancy` measure generation quality; `context_precision` and `context_recall` measure retrieval quality.
 
-### Task 4 sweep — chunk size and top-k (dense retrieval)
+### sweep — chunk size and top-k (dense retrieval)
 
 | Config | chunk\_size | overlap | top\_k | faithfulness | answer\_relevancy | context\_precision | context\_recall |
 |---|---|---|---|---|---|---|---|
@@ -348,7 +348,7 @@ make mlflow-ui                             # open MLflow UI
 
 **Takeaway:** chunk size dominates top-k. Doubling chunk size (512→1024) gave a bigger metric jump than doubling top-k (5→10), and used half the chunks. Frozen baseline for all subsequent experiments: `chunk_1024`.
 
-### Task 5 — hybrid search and reranking (chunk\_size=1024, top\_k=5)
+### hybrid search and reranking (chunk\_size=1024, top\_k=5)
 
 | Strategy | faithfulness | answer\_relevancy | context\_precision | context\_recall |
 |---|---|---|---|---|
@@ -360,7 +360,7 @@ make mlflow-ui                             # open MLflow UI
 
 **When hybrid would likely help instead:** corpora with many exact-match terms that embeddings struggle with — error codes, API tokens, version numbers, product SKUs, function names without surrounding prose. The FastAPI docs corpus is the opposite: prose-heavy explanations where dense semantics shine.
 
-### Task 6 — agentic RAG (chunk\_size=1024, top\_k=5, dense retrieval)
+### agentic RAG (chunk\_size=1024, top\_k=5, dense retrieval)
 
 | Strategy | faithfulness | answer\_relevancy | context\_precision | context\_recall |
 |---|---|---|---|---|
@@ -405,7 +405,7 @@ graph TD;
 
 **Retry logic:** if fewer than 2 chunks pass grading and no retry has been attempted, the graph loops back to `query_rewriter`. Maximum 1 retry.
 
-## Task 8 — vLLM backend + benchmark (Apple Silicon, M4 Max)
+## vLLM backend + benchmark (Apple Silicon, M4 Max)
 
 Inference backend is switchable via `INFERENCE_BACKEND=ollama|vllm` in `.env`.  
 With `vllm`, the API uses `ChatOpenAI` pointing at a [vllm-metal](https://github.com/vllm-project/vllm-metal) endpoint (OpenAI-compatible, same API as production vLLM on CUDA).
@@ -454,9 +454,9 @@ uv run python benchmarks/bench_backends.py
 INFERENCE_BACKEND=vllm uv run python evaluation/run_eval.py --config configs/chunk_1024.yaml
 ```
 
-## Task 9 — Embedder ONNX optimization
+## Embedder ONNX optimization
 
-Swappable embedder backend mirroring Task 8's `make_llm()` pattern: same factory, three runtimes. Demonstrates ONNX Runtime + dynamic INT8 quantization on a classical-ML serving stack (the LLM serving from Task 8 is the other half).
+Swappable embedder backend mirroring `make_llm()` pattern: same factory, three runtimes. Demonstrates ONNX Runtime + dynamic INT8 quantization on a classical-ML serving stack.
 
 ### Backends
 
@@ -530,10 +530,6 @@ Each ONNX backend is graded by Ragas against the same 25-question golden dataset
 
 Static quantization with a calibration set is the documented escalation path for trying to recover INT8 quality, but on a personal-project budget the negative result is itself the deliverable — measuring honestly that INT8 doesn't work here is more informative than bashing on it until it does. Numbers above live in MLflow under experiment `docsrag-rag-eval` (`make mlflow-ui`).
 
-### Reproducibility
-
-Steps 10.1–10.8 in [Quick Start](#step-10--onnx-embedder-backend-optional-task-9-reproduction) above walk through the full Task 9 reproduction from a fresh checkout: install the extra, export, quantize, parity-test, reindex, benchmark, eval, switch the API. Each step is idempotent and gated by the previous one.
-
 ## Lessons Learned
 
 Things this project taught me that aren't in any RAG tutorial:
@@ -548,10 +544,10 @@ The single `INFERENCE_BACKEND` env var is the difference between a one-off demo 
 `temperature=0.0` everywhere isn't paranoia — it's what makes Ragas evaluation actually reproducible across runs. Once that's broken, every "the metric improved" claim becomes "the metric improved or maybe noise."
 
 **4. Observability has to be additive.**  
-LangFuse and Prometheus were added in Task 7 with zero changes to the RAG pipeline logic. The pipeline doesn't know whether tracing is on. If observability is invasive (callbacks threading through business logic, conditional code paths for "metrics enabled"), it gets ripped out the first time it breaks something. Decouple it.
+LangFuse and Prometheus were added with zero changes to the RAG pipeline logic. The pipeline doesn't know whether tracing is on. If observability is invasive (callbacks threading through business logic, conditional code paths for "metrics enabled"), it gets ripped out the first time it breaks something. Decouple it.
 
 **5. Embed once, embed everywhere — but make sure it's literally the same embedder.**  
-Both `indexing/run_indexing.py` and `api/rag.py` go through the same `embeddings.factory.make_embedder()` factory. Using a different LangChain wrapper at query time (even one that "should" be equivalent) silently degrades retrieval because of subtle differences in pooling/normalization. The bug doesn't crash, it just makes things slightly worse. Eval would catch it; trust wouldn't. This is also why Task 9's ONNX backend was validated with a hard cosine-parity gate (`tests/test_embedder_parity.py`, threshold 0.9999) before being trusted to read the existing index — the parity test would have caught any pooling drift between the PyTorch wrapper and the ONNX graph.
+Both `indexing/run_indexing.py` and `api/rag.py` go through the same `embeddings.factory.make_embedder()` factory. Using a different LangChain wrapper at query time (even one that "should" be equivalent) silently degrades retrieval because of subtle differences in pooling/normalization. The bug doesn't crash, it just makes things slightly worse. Eval would catch it; trust wouldn't. This is also why ONNX backend was validated with a hard cosine-parity gate (`tests/test_embedder_parity.py`, threshold 0.9999) before being trusted to read the existing index — the parity test would have caught any pooling drift between the PyTorch wrapper and the ONNX graph.
 
 **6. Honest negative results > impressive demos.**  
 Showing that hybrid+rerank lost to dense, and that agentic RAG sacrificed recall for precision, is more interesting than claiming everything got better. Anyone can build a stack of trendy components; understanding the trade-offs is the actual MLOps skill.
@@ -598,7 +594,7 @@ Non-obvious architectural decisions to know before extending the code:
 
 - **Endpoints are `def`, not `async def`.** Both `qdrant_client.query_points()` and `chain.invoke()` are blocking. FastAPI runs sync endpoints in a thread pool; using `async def` would block the event loop instead. When we add streaming (`/ask/stream`), we'll switch to `async def` with `chain.astream()` — until then, sync is correct.
 
-- **Same embedder factory at indexing and query time.** `embeddings.factory.make_embedder()` is used by both `indexing/run_indexing.py` and `api/rag.py`. **Do not** substitute a different LangChain wrapper at query time — even ones that "should" be equivalent differ in pooling / normalization, silently degrading retrieval. The Task 9 cosine-parity test (`tests/test_embedder_parity.py`) exists precisely because this is hard to spot without measurement.
+- **Same embedder factory at indexing and query time.** `embeddings.factory.make_embedder()` is used by both `indexing/run_indexing.py` and `api/rag.py`. **Do not** substitute a different LangChain wrapper at query time — even ones that "should" be equivalent differ in pooling / normalization, silently degrading retrieval. The cosine-parity test (`tests/test_embedder_parity.py`) exists precisely because this is hard to spot without measurement.
 
 - **Direct `qdrant_client.query_points()`, not `langchain-qdrant`.** `api/rag.py` maps Qdrant `ScoredPoint.payload` to `langchain_core.documents.Document` manually in `_scored_point_to_hit()`. The bypass was necessary because `langchain-qdrant 0.2.x` changed metadata handling and stopped propagating flat payload fields into `Document.metadata`. If you swap retrieval back to `langchain-qdrant` later, verify chunk metadata survives the round-trip.
 
@@ -615,26 +611,26 @@ docsrag/
 ├── api/              # FastAPI service
 │   ├── main.py       # /health, /ask, /agent/ask endpoints + Prometheus instrumentation
 │   ├── rag.py        # RAGPipeline: embed → retrieve → generate
-│   ├── retriever.py  # HybridRetriever: BM25Index + RRF + CrossEncoder (Task 5)
-│   ├── graph.py      # Agentic RAG graph via LangGraph (Task 6)
-│   ├── llm.py        # LLM factory: ChatOllama or ChatOpenAI→vLLM (Task 8)
+│   ├── retriever.py  # HybridRetriever: BM25Index + RRF + CrossEncoder
+│   ├── graph.py      # Agentic RAG graph via LangGraph
+│   ├── llm.py        # LLM factory: ChatOllama or ChatOpenAI→vLLM
 │   ├── translation.py # RU↔EN wrapper — routes Russian questions through translation
-│   ├── metrics.py    # Prometheus custom metrics (Task 7)
-│   ├── tracing.py    # LangFuse callback helper (Task 7)
+│   ├── metrics.py    # Prometheus custom metrics
+│   ├── tracing.py    # LangFuse callback helper
 │   ├── prompts.py    # System + user + translation prompts
 │   ├── schemas.py    # Pydantic request/response models
 │   └── config.py     # Pydantic Settings
-├── embeddings/       # Embedder backends (Task 9)
+├── embeddings/       # Embedder backends
 │   ├── pytorch.py    # PytorchEmbedder (sentence-transformers, MPS/CUDA/CPU)
 │   ├── onnx.py       # OnnxEmbedder (raw onnxruntime, sentence_embedding output)
 │   └── factory.py    # make_embedder(backend) — picks by EMBEDDER_BACKEND
-├── indexing/         # Indexing pipeline (Task 2)
+├── indexing/         # Indexing pipeline
 │   ├── loader.py     # Markdown loader
 │   ├── chunker.py    # Hierarchical chunker (header + recursive)
 │   ├── qdrant_store.py
 │   ├── run_indexing.py
 │   └── smoke_test.py
-├── evaluation/       # Evaluation framework (Task 4)
+├── evaluation/       # Evaluation framework
 │   ├── golden_dataset.json  # 25 hand-verified Q&A pairs
 │   └── run_eval.py          # Ragas + MLflow eval harness (honours embedder_backend in YAML)
 ├── configs/          # Experiment configs (YAML)
@@ -643,22 +639,22 @@ docsrag/
 │   ├── chunk_1024.yaml      # dense baseline (frozen)
 │   ├── hybrid.yaml          # dense + BM25 → RRF
 │   ├── hybrid_rerank.yaml   # dense + BM25 → RRF + cross-encoder
-│   ├── agentic.yaml         # LangGraph agentic RAG (Task 6)
-│   ├── onnx_fp32.yaml       # chunk_1024 + EMBEDDER_BACKEND=onnx-fp32 (Task 9)
-│   ├── onnx_int8.yaml       # chunk_1024 + EMBEDDER_BACKEND=onnx-int8 (Task 9)
+│   ├── agentic.yaml         # LangGraph agentic RAG
+│   ├── onnx_fp32.yaml       # chunk_1024 + EMBEDDER_BACKEND=onnx-fp32
+│   ├── onnx_int8.yaml       # chunk_1024 + EMBEDDER_BACKEND=onnx-int8
 │   ├── topk_3.yaml
 │   └── topk_10.yaml
-├── scripts/          # One-off operational scripts (Task 9)
+├── scripts/          # One-off operational scripts
 │   ├── export_onnx.py        # bge → ONNX FP32 via optimum-cli
 │   ├── quantize_onnx.py      # FP32 → INT8 (dynamic, per-channel)
 │   └── export_torchscript.py # bge backbone → TorchScript .pt (bench-only artifact)
 ├── models/           # ONNX-exported models (gitignored, ~160 MB total)
-├── observability/    # Task 7 — Prometheus, Grafana, LangFuse
+├── observability/    # Prometheus, Grafana, LangFuse
 ├── benchmarks/
-│   ├── bench_backends.py  # Ollama vs vllm-metal (Task 8)
-│   └── bench_embedder.py  # PyTorch-MPS/CPU vs ONNX-CPU FP32/INT8 (Task 9)
+│   ├── bench_backends.py  # Ollama vs vllm-metal
+│   └── bench_embedder.py  # PyTorch-MPS/CPU vs ONNX-CPU FP32/INT8
 ├── tests/
-│   └── test_embedder_parity.py  # PyTorch ↔ ONNX FP32 cosine parity gate (Task 9)
+│   └── test_embedder_parity.py  # PyTorch ↔ ONNX FP32 cosine parity gate
 ├── docker-compose.yml
 └── Makefile
 ```
@@ -684,19 +680,19 @@ make ask Q="..."   # POST /ask
 make warmup        # Load LLM into Ollama RAM (run after make up)
 make reindex                                      # Recreate the active collection (CHUNK_SIZE=1024 OVERLAP=100 defaults; honours EMBEDDER_BACKEND)
 make reindex CHUNK_SIZE=512 CHUNK_OVERLAP=50      # Override chunk params
-make reindex-onnx                                 # Recreate docsrag with EMBEDDER_BACKEND=onnx-fp32 (Task 9)
-make reindex-int8                                 # Recreate docsrag_int8 with EMBEDDER_BACKEND=onnx-int8 (Task 9)
+make reindex-onnx                                 # Recreate docsrag with EMBEDDER_BACKEND=onnx-fp32
+make reindex-int8                                 # Recreate docsrag_int8 with EMBEDDER_BACKEND=onnx-int8
 make smoke         # Retrieval sanity check
 make eval          # Run evaluation (CONFIG=configs/baseline.yaml by default; pass CONFIG=configs/onnx_*.yaml for ONNX)
 make mlflow-ui     # Open MLflow UI in browser
 make prometheus-ui # Open Prometheus UI (http://localhost:9090)
 make grafana-ui    # Open Grafana dashboard (http://localhost:3000, admin/admin)
-# ONNX (Task 9, opt-in)
+# ONNX
 make install-onnx     # uv pip install -e ".[onnx]" — adds optimum + onnxruntime
 make export-onnx      # bge-small → models/bge-small-en-v1.5-onnx-fp32/ (FORCE=1 to re-export)
 make quantize-onnx    # FP32 → INT8 dynamic per-channel → models/bge-small-en-v1.5-onnx-int8/
 make bench-embedder   # Latency + throughput across PyTorch-MPS/CPU + ONNX-CPU FP32/INT8 (+ TorchScript-CPU if exported)
-make export-torchscript # Trace bge backbone to TorchScript .pt — bench-only artifact (Task 9 step 11)
+make export-torchscript # Trace bge backbone to TorchScript .pt — bench-only artifact
 make lint          # ruff
 make format        # ruff --fix + black
 make type-check    # mypy

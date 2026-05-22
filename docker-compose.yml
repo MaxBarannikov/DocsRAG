@@ -5,7 +5,7 @@
 # Services in this compose file reach Ollama at http://host.docker.internal:11434
 #
 # To switch to FULL DOCKER mode (Variant B), uncomment the `ollama` service below
-# and change OLLAMA_BASE_URL in API service (added in Task 3) to http://ollama:11434.
+# and change OLLAMA_BASE_URL in API service to http://ollama:11434.
 # Variant B is slower on Mac (CPU-only inside Docker on Apple Silicon)
 # but provides single-command startup for demos.
 
