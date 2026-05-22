@@ -83,6 +83,40 @@ def measure_throughput(encode_fn, batch: list[str], runs: int) -> float:
     return len(batch) / float(np.mean(times))
 
 
+def _make_torchscript_encode_fn(model_path: Path, tokenizer_name: str, device: str = "cpu"):
+    """Build an encode_fn around a traced TorchScript backbone (Task 9 step 11).
+
+    No production wrapper class — keeps TorchScript bench-only per the plan.
+    Mirrors the manual-pooling path: traced backbone returns last_hidden_state,
+    we mean-pool with the attention mask, then L2-normalize. Output shape and
+    semantics match OnnxEmbedder / PytorchEmbedder.
+    """
+    import torch
+    from transformers import AutoTokenizer
+
+    model = torch.jit.load(str(model_path), map_location=device)
+    model.eval()
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    torch_device = torch.device(device)
+
+    def encode(texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        all_embeddings: list[list[float]] = []
+        for start in range(0, len(texts), 32):
+            batch = texts[start : start + 32]
+            inputs = tokenizer(batch, padding=True, truncation=True, return_tensors="pt").to(torch_device)
+            with torch.no_grad():
+                last_hidden = model(inputs["input_ids"], inputs["attention_mask"])
+            mask = inputs["attention_mask"].unsqueeze(-1).float()
+            pooled = (last_hidden * mask).sum(1) / mask.sum(1).clamp(min=1e-9)
+            normalized = torch.nn.functional.normalize(pooled, p=2, dim=1)
+            all_embeddings.extend(normalized.cpu().tolist())
+        return all_embeddings
+
+    return encode
+
+
 def bench_backend(name: str, encode_fn, single_runs: int, batch_texts: list[str]) -> dict:
     print(f"\n▶ {name}")
     lat = measure_latency(encode_fn, single_runs)
@@ -148,6 +182,16 @@ def main() -> int:
             lambda t: onnx_int8.encode(t, show_progress=False),
             args.single_runs,
             batch_texts,
+        )
+
+    # TorchScript-CPU (Task 9 step 11 bonus) — only if the .pt file exists.
+    # No production wrapper: the encode_fn is built inline here. Skipped silently
+    # if `scripts/export_torchscript.py` hasn't been run.
+    torchscript_path = Path("models/bge-small-en-v1.5.pt")
+    if torchscript_path.exists():
+        encode_fn = _make_torchscript_encode_fn(torchscript_path, "BAAI/bge-small-en-v1.5", device="cpu")
+        results["TorchScript-CPU"] = bench_backend(
+            "TorchScript-CPU", encode_fn, args.single_runs, batch_texts,
         )
 
     # Summary tables — pre-formatted for direct paste into CLAUDE.md README.

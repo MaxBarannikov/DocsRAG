@@ -13,7 +13,7 @@ endif
         build rebuild restart api-logs api-shell health ask warmup \
         eval mlflow-ui prometheus-ui grafana-ui \
         install-vllm vllm-start vllm-status install-onnx export-onnx quantize-onnx \
-        reindex-onnx reindex-int8 bench-embedder clean
+        reindex-onnx reindex-int8 bench-embedder export-torchscript clean
 
 # Default question for `make ask` if Q is not provided
 Q ?= How do I define a path parameter in FastAPI?
@@ -41,6 +41,7 @@ help:
 	@echo "    make export-onnx   - Export embedder to ONNX FP32 (ONNX_MODEL=... overridable, FORCE=1 to re-export)"
 	@echo "    make quantize-onnx - Quantize ONNX FP32 → INT8 dynamic (FORCE=1 to re-quantize)"
 	@echo "    make bench-embedder - Latency + throughput benchmark across 4 embedder backends"
+	@echo "    make export-torchscript - Trace bge backbone to TorchScript .pt (bench-only artifact)"
 	@echo ""
 	@echo "  RAG API:"
 	@echo "    make health        - GET /health"
@@ -169,8 +170,15 @@ quantize-onnx:
 
 # Embedder backend benchmark: PyTorch-MPS, PyTorch-CPU, ONNX-CPU-FP32, ONNX-CPU-INT8.
 # Reports single-query p50/p95/p99 latency + throughput at batch sizes 1/8/32/128.
+# Adds a TorchScript-CPU row automatically if models/bge-small-en-v1.5.pt exists
+# (produced by `make export-torchscript`).
 bench-embedder:
 	python benchmarks/bench_embedder.py
+
+# Trace the bge backbone to TorchScript .pt — bench-only artifact (Task 9 step 11).
+# Output: models/bge-small-en-v1.5.pt. Idempotent — pass FORCE=1 to re-trace.
+export-torchscript:
+	@python scripts/export_torchscript.py $(if $(FORCE),--force,)
 
 # RAG API
 
