@@ -161,6 +161,7 @@ def log_to_mlflow(
                 "chunk_overlap": config["chunk_overlap"],
                 "top_k": config["top_k"],
                 "embedding_model": config["embedding_model"],
+                "embedder_backend": config.get("embedder_backend", settings.embedder_backend),
                 "llm_model": config["llm_model"],
                 "prompt_version": config["prompt_version"],
                 "retrieval_strategy": config.get("retrieval_strategy", "dense"),
@@ -187,6 +188,18 @@ def main() -> None:
         config: dict[str, Any] = yaml.safe_load(f)
 
     logger.info("Config: {}", config)
+
+    # If config pins an embedder backend, override settings BEFORE building the
+    # pipeline. make_embedder() reads settings.embedder_backend at call time
+    # (inside RAGPipeline.__init__), so the override propagates cleanly even
+    # though settings was imported at module load.
+    if "embedder_backend" in config:
+        settings.embedder_backend = config["embedder_backend"]
+        logger.info(
+            "Override embedder_backend={} | active_qdrant_collection={}",
+            settings.embedder_backend,
+            settings.active_qdrant_collection,
+        )
 
     t_start = time.perf_counter()
 
