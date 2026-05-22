@@ -167,7 +167,7 @@ class HybridRetriever:
             result = merged[:top_k]
         else:
             pairs: list[tuple[str, str]] = [(query, hit.document.page_content) for hit in merged]
-            rerank_scores = self._reranker.predict(pairs)  # type: ignore[arg-type]
+            rerank_scores = self._reranker.predict(pairs)
             reranked = sorted(zip(merged, rerank_scores, strict=False), key=lambda x: x[1], reverse=True)
             result = [RetrievalHit(document=hit.document, score=float(score)) for hit, score in reranked[:top_k]]
 

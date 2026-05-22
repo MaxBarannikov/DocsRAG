@@ -21,6 +21,8 @@ from indexing.embeddings import EmbeddingModel
 if TYPE_CHECKING:
     from qdrant_client.models import ScoredPoint
 
+    from api.retriever import HybridRetriever
+
 RetrievalStrategy = Literal["dense", "hybrid", "hybrid_rerank"]
 
 
@@ -84,7 +86,7 @@ class RAGPipeline:
             retrieval_strategy,
         )
 
-    def _build_hybrid_retriever(self, strategy: RetrievalStrategy):  # type: ignore[return]
+    def _build_hybrid_retriever(self, strategy: RetrievalStrategy) -> HybridRetriever:
         from api.retriever import HybridRetriever, load_or_build_bm25, load_reranker
 
         bm25_index = load_or_build_bm25(self._qdrant_client)

@@ -33,6 +33,8 @@ from loguru import logger
 from api.llm import make_llm
 
 if TYPE_CHECKING:
+    from langgraph.graph.state import CompiledStateGraph
+
     from api.rag import RAGPipeline
     from api.schemas import Source
 
@@ -53,7 +55,7 @@ class GraphState(TypedDict):
     callbacks: list  # LangFuse CallbackHandler list, empty when tracing disabled
 
 
-def build_agent_graph(pipeline: RAGPipeline):
+def build_agent_graph(pipeline: RAGPipeline) -> CompiledStateGraph:
     llm = make_llm(temperature=0.0)
     # Separate grader LLM with json_mode=True so Qwen reliably outputs structured verdicts.
     grader_llm = make_llm(temperature=0.0, json_mode=True)
