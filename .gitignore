@@ -8,6 +8,7 @@ __pycache__/
 .env
 *.log
 data/
+models/
 qdrant_storage/
 ollama_data/
 mlruns/
