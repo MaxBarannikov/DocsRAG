@@ -251,6 +251,28 @@ make health    # should show "embedder_backend": "onnx-fp32"
 
 See [Task 9 — Embedder ONNX optimization](#task-9--embedder-onnx-optimization) below for the numeric results and architectural decisions.
 
+## Troubleshooting
+
+Real failure modes hit while building / running this project:
+
+- **First `/ask` after `make up` is slow (10–20 s), subsequent calls fast.** Ollama lazy-loads the model into RAM on the first request. Not a bug. Run `make warmup` after `make up` to pay this cost once outside the user's request.
+
+- **API container starts but `/ask` returns `ConnectionError`.** The Ollama menu-bar app isn't running on the host. From inside the container: `curl -s http://host.docker.internal:11434/api/tags` should return JSON. If not, start the Ollama app or `ollama serve` natively. (Variant A — Ollama on the host — is the default; Variant B with Ollama in a sibling container is commented out in `docker-compose.yml`.)
+
+- **`docker compose build` fails on `torch`.** Docker Desktop memory limit. Bump to 8+ GB in Settings → Resources → Memory.
+
+- **Embedding model re-downloads on every `up --build`.** The `hf_cache` Docker volume in `docker-compose.yml` mounts `/app/.cache/huggingface`. If you removed it, the ~470 MB download repeats on every container rebuild.
+
+- **`Failed to export span batch code: 401, reason: Unauthorized` floods logs during eval.** LangFuse keys in `.env` are wrong / expired / for the wrong region. Either fix them (`cloud.langfuse.com` → Settings → API Keys; check whether your project is in US or EU region — the keypairs are different) or clear them (`LANGFUSE_PUBLIC_KEY=` and `LANGFUSE_SECRET_KEY=`) to disable tracing entirely. The 401s don't break Ragas — numbers in MLflow are unaffected — they're just noise.
+
+- **`make vllm-start` fails with `vllm: command not found`.** You're not in the project venv (`source .venv/bin/activate`) or upstream `vllm` isn't installed yet (`make install-vllm`).
+
+- **`uv pip sync uv.lock` silently removes vllm-metal and/or ONNX deps.** They're not pinned in `pyproject.toml` / `uv.lock` (vllm: CUDA-only deps without macOS wheels; ONNX: kept as opt-in extra). After any `uv pip sync`, recovery is `make install-vllm` and/or `make install-onnx`.
+
+- **Russian answers come back with garbled Cyrillic.** On `INFERENCE_BACKEND=vllm` with the default 7B-4bit MLX, the translator's EN→RU pass produces latin-with-acute artefacts mid-word (e.g. `разdéлвние`). Switch `VLLM_MODEL` in `.env` to `mlx-community/Qwen2.5-14B-Instruct-4bit` and `make vllm-start` again. Ollama and 14B-MLX both handle Russian cleanly.
+
+- **`pytest tests/test_embedder_parity.py` errors on `ModuleNotFoundError: No module named 'embeddings'`** but `python -c "from embeddings ..."` works. The editable install's package list (`__editable__.docsrag-0.1.0.pth`) was registered before a new top-level package was added. Recovery: `uv pip install -e . --no-deps`.
+
 ## API
 
 The RAG API runs on `http://localhost:8000`.
@@ -567,6 +589,24 @@ What I'd do differently if this were a real production system:
 - Streaming responses (`/ask/stream`) — current p95 is 5–8s, perceived latency would drop dramatically with token streaming.
 - Caching: identical-question cache keyed on question hash + retrieval config. ~30% of FAQ-style traffic is duplicates.
 - Re-ranking with a domain-tuned cross-encoder once the corpus stabilizes — generic `bge-reranker-v2-m3` is a starting point, not a finish line.
+
+## Design Notes
+
+Non-obvious architectural decisions to know before extending the code:
+
+- **Pipeline is a single cached instance.** `api/rag.py::get_pipeline()` is decorated with `@lru_cache(maxsize=1)` and FastAPI's `lifespan` calls it once at startup. The embedder (~130 MB), Qdrant client, and LLM wrapper are heavy — never construct `RAGPipeline()` directly inside a request handler. Inject via `Annotated[RAGPipeline, Depends(get_pipeline)]`.
+
+- **Endpoints are `def`, not `async def`.** Both `qdrant_client.query_points()` and `chain.invoke()` are blocking. FastAPI runs sync endpoints in a thread pool; using `async def` would block the event loop instead. When we add streaming (`/ask/stream`), we'll switch to `async def` with `chain.astream()` — until then, sync is correct.
+
+- **Same embedder factory at indexing and query time.** `embeddings.factory.make_embedder()` is used by both `indexing/run_indexing.py` and `api/rag.py`. **Do not** substitute a different LangChain wrapper at query time — even ones that "should" be equivalent differ in pooling / normalization, silently degrading retrieval. The Task 9 cosine-parity test (`tests/test_embedder_parity.py`) exists precisely because this is hard to spot without measurement.
+
+- **Direct `qdrant_client.query_points()`, not `langchain-qdrant`.** `api/rag.py` maps Qdrant `ScoredPoint.payload` to `langchain_core.documents.Document` manually in `_scored_point_to_hit()`. The bypass was necessary because `langchain-qdrant 0.2.x` changed metadata handling and stopped propagating flat payload fields into `Document.metadata`. If you swap retrieval back to `langchain-qdrant` later, verify chunk metadata survives the round-trip.
+
+- **`temperature=0.0` everywhere, plus explicit sampling params.** `api/llm.py` sets `top_p=1.0`, `max_tokens=1024` (Ollama: `num_predict=1024`), and `frequency_penalty=0.3` for the vllm path. Two reasons: backend parity (Ollama and vllm-metal have different defaults — explicit params make benchmarks fair), and bounded cost (a runaway generation is capped at ~1024 tokens). The `frequency_penalty` is an anti-loop brake for Qwen 2.5 at temp=0 on vllm (Ollama's `repeat_penalty=1.1` is the equivalent on its side).
+
+- **`load_dotenv()` at module level in `api/config.py`.** This happens *before* `Settings()` is instantiated, intentionally. Pydantic Settings can read `.env` on its own, but third-party libraries that read `os.environ` directly (e.g. `huggingface_hub` for `HF_TOKEN`) need the values pushed into the process environment first. Removing the `load_dotenv()` line breaks HF downloads on first run.
+
+- **Observability is additive.** LangFuse and the custom Prometheus metrics in `api/metrics.py` were bolted on without touching the RAG pipeline logic — `api/tracing.py::get_langfuse_handler()` returns `None` when keys are unset, the pipeline doesn't know whether tracing is on. If you ever conditionalize core code on whether tracing is enabled, you've broken the invariant.
 
 ## Project Structure
 
