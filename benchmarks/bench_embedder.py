@@ -191,7 +191,10 @@ def main() -> int:
     if torchscript_path.exists():
         encode_fn = _make_torchscript_encode_fn(torchscript_path, "BAAI/bge-small-en-v1.5", device="cpu")
         results["TorchScript-CPU"] = bench_backend(
-            "TorchScript-CPU", encode_fn, args.single_runs, batch_texts,
+            "TorchScript-CPU",
+            encode_fn,
+            args.single_runs,
+            batch_texts,
         )
 
     # Summary tables — pre-formatted for direct paste into CLAUDE.md README.

@@ -89,6 +89,7 @@ class OnnxEmbedder:
     def encode(
         self,
         texts: Sequence[str],
+        *,
         batch_size: int = 32,
         show_progress: bool = True,
         prefix: str = "",
