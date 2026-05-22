@@ -87,7 +87,8 @@ class RAGPipeline:
         )
 
     def _build_hybrid_retriever(self, strategy: RetrievalStrategy) -> HybridRetriever:
-        from api.retriever import HybridRetriever, load_or_build_bm25, load_reranker
+        # Lazy import: avoid loading BM25 / cross-encoder when strategy is "dense".
+        from api.retriever import HybridRetriever, load_or_build_bm25, load_reranker  # noqa: PLC0415
 
         bm25_index = load_or_build_bm25(self._qdrant_client)
         reranker = load_reranker() if strategy == "hybrid_rerank" else None
@@ -133,18 +134,21 @@ class RAGPipeline:
         self,
         question: str,
         top_k: int,
+        *,
         include_contexts: bool,
         rerank_top_n: int = 20,
     ) -> tuple[str, list[Source], dict[str, int]]:
         """Full pipeline: optionally translate RU→EN → retrieve → generate → optionally translate EN→RU."""
-        from api.tracing import get_langfuse_handler
-        from api.translation import (
+        # Lazy imports below break a circular dep (translation pulls api.llm) and
+        # keep optional tracing out of the hot path when LangFuse keys are unset.
+        from api.tracing import get_langfuse_handler  # noqa: PLC0415
+        from api.translation import (  # noqa: PLC0415
             contains_cyrillic,
             translate_to_english,
             translate_to_russian,
         )
 
-        handler = get_langfuse_handler(question)
+        handler = get_langfuse_handler()
         callbacks = [handler] if handler else None
 
         is_russian = contains_cyrillic(question)
@@ -174,7 +178,7 @@ class RAGPipeline:
 
         t_end = time.perf_counter()
 
-        sources = [self._hit_to_source(h, include_contexts) for h in hits]
+        sources = [self._hit_to_source(h, include_contexts=include_contexts) for h in hits]
         timings = {
             "retrieval_ms": int((t1 - t0) * 1000),
             "generation_ms": int((t2 - t1) * 1000),
@@ -213,7 +217,7 @@ class RAGPipeline:
         return "\n\n---\n\n".join(blocks)
 
     @staticmethod
-    def _hit_to_source(hit: RetrievalHit, include_contexts: bool) -> Source:
+    def _hit_to_source(hit: RetrievalHit, *, include_contexts: bool) -> Source:
         md = hit.document.metadata or {}
         return Source(
             source_path=str(md.get("source_path", "unknown")),

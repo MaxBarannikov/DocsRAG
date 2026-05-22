@@ -12,12 +12,12 @@ for _var in ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY
 from api.config import settings  # noqa: E402 — import after proxy cleanup
 
 
-def get_langfuse_handler(question: str = "") -> Any | None:
+def get_langfuse_handler() -> Any | None:
     """Return a LangFuse CallbackHandler for this request, or None if tracing is not configured."""
     if not settings.langfuse_public_key or not settings.langfuse_secret_key:
         return None
     try:
-        from langfuse.langchain import CallbackHandler
+        from langfuse.langchain import CallbackHandler  # noqa: PLC0415 — lazy: only import when tracing enabled
 
         return CallbackHandler()
     except Exception:

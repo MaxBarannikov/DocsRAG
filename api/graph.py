@@ -17,20 +17,19 @@ import json
 import os
 import time
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 # langchain_ollama initialises an httpx client at import time and picks up
 # SOCKS proxy env vars, which breaks it if socksio isn't installed.
+# Must run before any import chain that transitively loads httpx.
 for _var in ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
     os.environ.pop(_var, None)
 
-from typing import TypedDict
+from langchain_core.messages import HumanMessage  # noqa: E402 — imports below env-pop guard
+from langgraph.graph import END, START, StateGraph  # noqa: E402
+from loguru import logger  # noqa: E402
 
-from langchain_core.messages import HumanMessage
-from langgraph.graph import END, START, StateGraph
-from loguru import logger
-
-from api.llm import make_llm
+from api.llm import make_llm  # noqa: E402
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
@@ -55,7 +54,9 @@ class GraphState(TypedDict):
     callbacks: list  # LangFuse CallbackHandler list, empty when tracing disabled
 
 
-def build_agent_graph(pipeline: RAGPipeline) -> CompiledStateGraph:
+def build_agent_graph(pipeline: RAGPipeline) -> CompiledStateGraph:  # noqa: C901, PLR0915
+    # LangGraph builder: 4 closure-capturing node fns inflate the statement count;
+    # extracting them only moves closures up a level without simplifying the flow.
     llm = make_llm(temperature=0.0)
     # Separate grader LLM with json_mode=True so Qwen reliably outputs structured verdicts.
     grader_llm = make_llm(temperature=0.0, json_mode=True)
@@ -213,17 +214,19 @@ class AgentPipeline:
         self,
         question: str,
         top_k: int,
+        *,
         include_contexts: bool,
-        rerank_top_n: int = 20,
+        rerank_top_n: int = 20,  # noqa: ARG002 — interface parity with RAGPipeline.ask
     ) -> tuple[str, list[Source], dict[str, int]]:
-        from api.tracing import get_langfuse_handler
-        from api.translation import (
+        # Lazy imports: translation pulls api.llm (circular), tracing is optional.
+        from api.tracing import get_langfuse_handler  # noqa: PLC0415
+        from api.translation import (  # noqa: PLC0415
             contains_cyrillic,
             translate_to_english,
             translate_to_russian,
         )
 
-        handler = get_langfuse_handler(question)
+        handler = get_langfuse_handler()
         callbacks = [handler] if handler else []
 
         is_russian = contains_cyrillic(question)
@@ -294,6 +297,6 @@ class AgentPipeline:
 @lru_cache(maxsize=1)
 def get_agent_pipeline() -> AgentPipeline:
     """Application-wide singleton for the agentic pipeline."""
-    from api.rag import get_pipeline
+    from api.rag import get_pipeline  # noqa: PLC0415 — circular dep: api.rag imports types from api.graph context
 
     return AgentPipeline(get_pipeline())

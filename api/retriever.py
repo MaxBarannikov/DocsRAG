@@ -89,7 +89,8 @@ class BM25Index:
     @classmethod
     def load(cls, path: Path) -> BM25Index:
         with path.open("rb") as f:
-            index = pickle.load(f)
+            # Index file is written by save() in this same process; not external input.
+            index = pickle.load(f)  # noqa: S301 — trusted local file written by save()
         logger.info("BM25 index loaded from {} ({} docs)", path, len(index._docs))
         return index
 
@@ -105,7 +106,7 @@ def _rrf_merge(
     Uses chunk_index as the document identifier for deduplication.
     k=60 is the standard RRF constant that dampens high-rank advantage.
     """
-    from api.rag import RetrievalHit  # local import avoids circular dependency
+    from api.rag import RetrievalHit  # noqa: PLC0415 — circular dep: api.rag imports from api.retriever
 
     scores: dict[int, float] = {}
     doc_map: dict[int, Document] = {}
@@ -146,7 +147,7 @@ class HybridRetriever:
         top_k: int,
         rerank_top_n: int = 20,
     ) -> list[RetrievalHit]:
-        from api.rag import RetrievalHit, _scored_point_to_hit
+        from api.rag import RetrievalHit, _scored_point_to_hit  # noqa: PLC0415 — circular dep
 
         fetch_n = max(top_k, rerank_top_n) if self._reranker else top_k
 

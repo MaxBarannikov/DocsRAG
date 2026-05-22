@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Warm up the RAG pipeline at startup so the first request isn't slow."""
     logger.info("Starting DocsRAG API")
     get_pipeline()  # constructs and caches the singleton; agent pipeline shares it

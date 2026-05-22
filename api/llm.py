@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 MAX_TOKENS = 1024
 
 
-def make_llm(temperature: float = 0.0, json_mode: bool = False) -> BaseChatModel:
+def make_llm(temperature: float = 0.0, *, json_mode: bool = False) -> BaseChatModel:
     """Return the configured LLM backend.
 
     ollama → ChatOllama; vllm → ChatOpenAI pointing at the vllm/vllm-metal endpoint
@@ -25,7 +25,7 @@ def make_llm(temperature: float = 0.0, json_mode: bool = False) -> BaseChatModel
     Ollama applies repeat_penalty=1.1 by default for the same reason.
     """
     if settings.inference_backend == "vllm":
-        from langchain_openai import ChatOpenAI
+        from langchain_openai import ChatOpenAI  # noqa: PLC0415 — lazy: only load vllm path when selected
 
         return ChatOpenAI(
             model=settings.vllm_model,
@@ -38,8 +38,8 @@ def make_llm(temperature: float = 0.0, json_mode: bool = False) -> BaseChatModel
             model_kwargs={"response_format": {"type": "json_object"}} if json_mode else {},
         )
 
-    # Default: Ollama
-    from langchain_ollama import ChatOllama
+    # Ollama backend (default).
+    from langchain_ollama import ChatOllama  # noqa: PLC0415 — lazy: only load Ollama path when selected
 
     return ChatOllama(
         model=settings.ollama_model,
