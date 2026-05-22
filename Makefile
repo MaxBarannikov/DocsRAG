@@ -12,7 +12,8 @@ endif
         fetch-docs index reindex smoke \
         build rebuild restart api-logs api-shell health ask warmup \
         eval mlflow-ui prometheus-ui grafana-ui \
-        install-vllm vllm-start vllm-status install-onnx export-onnx quantize-onnx clean
+        install-vllm vllm-start vllm-status install-onnx export-onnx quantize-onnx \
+        reindex-onnx reindex-int8 clean
 
 # Default question for `make ask` if Q is not provided
 Q ?= How do I define a path parameter in FastAPI?
@@ -49,6 +50,8 @@ help:
 	@echo "    make fetch-docs    - Download FastAPI documentation"
 	@echo "    make index         - Run the indexing pipeline (incremental)"
 	@echo "    make reindex       - Recreate the collection (CHUNK_SIZE=1024 CHUNK_OVERLAP=100 by default)"
+	@echo "    make reindex-onnx  - Reindex docsrag with ONNX FP32 backend (parity-equivalent to pytorch)"
+	@echo "    make reindex-int8  - Reindex docsrag_int8 with ONNX INT8 backend (separate collection)"
 	@echo "    make smoke         - Run a smoke retrieval test"
 	@echo ""
 	@echo "  Quality:"
@@ -194,6 +197,19 @@ CHUNK_OVERLAP ?= 100
 
 reindex:
 	python -m indexing.run_indexing --recreate --chunk-size $(CHUNK_SIZE) --overlap $(CHUNK_OVERLAP)
+	rm -f data/bm25_index.pkl
+
+# Reindex with ONNX FP32 backend → docsrag collection (parity-equivalent to pytorch).
+# Drops + recreates docsrag. Safe to run while API serves at EMBEDDER_BACKEND=pytorch
+# since FP32 ONNX and PyTorch vectors are numerically identical (Task 9 step 5).
+reindex-onnx:
+	EMBEDDER_BACKEND=onnx-fp32 python -m indexing.run_indexing --recreate --chunk-size $(CHUNK_SIZE) --overlap $(CHUNK_OVERLAP)
+	rm -f data/bm25_index.pkl
+
+# Reindex with ONNX INT8 backend → docsrag_int8 collection (separate index — vectors differ).
+# Creates docsrag_int8 fresh; doesn't touch docsrag.
+reindex-int8:
+	EMBEDDER_BACKEND=onnx-int8 python -m indexing.run_indexing --recreate --chunk-size $(CHUNK_SIZE) --overlap $(CHUNK_OVERLAP)
 	rm -f data/bm25_index.pkl
 
 smoke:
