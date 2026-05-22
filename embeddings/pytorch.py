@@ -16,10 +16,13 @@ from sentence_transformers import SentenceTransformer
 class PytorchEmbedder:
     """sentence-transformers wrapper with batched encoding and L2 normalization."""
 
-    def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5") -> None:
-        device = self._select_device()
-        logger.info(f"Loading PyTorch embedder '{model_name}' on device '{device}'")
-        self._model = SentenceTransformer(model_name, device=device)
+    def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5", device: str | None = None) -> None:
+        # `device=None` keeps the auto-detection path (MPS > CUDA > CPU).
+        # Pass an explicit string to override — useful for benchmarks comparing
+        # MPS vs CPU on the same machine (Task 9 step 9).
+        resolved_device = device if device is not None else self._select_device()
+        logger.info(f"Loading PyTorch embedder '{model_name}' on device '{resolved_device}'")
+        self._model = SentenceTransformer(model_name, device=resolved_device)
         self.model_name = model_name
         self.dimension = self._model.get_embedding_dimension()
         logger.info(f"Embedding dimension: {self.dimension}")

@@ -13,7 +13,7 @@ endif
         build rebuild restart api-logs api-shell health ask warmup \
         eval mlflow-ui prometheus-ui grafana-ui \
         install-vllm vllm-start vllm-status install-onnx export-onnx quantize-onnx \
-        reindex-onnx reindex-int8 clean
+        reindex-onnx reindex-int8 bench-embedder clean
 
 # Default question for `make ask` if Q is not provided
 Q ?= How do I define a path parameter in FastAPI?
@@ -40,6 +40,7 @@ help:
 	@echo "    make install-onnx  - Install ONNX Runtime + optimum into .venv (optional, for Task 9 work)"
 	@echo "    make export-onnx   - Export embedder to ONNX FP32 (ONNX_MODEL=... overridable, FORCE=1 to re-export)"
 	@echo "    make quantize-onnx - Quantize ONNX FP32 → INT8 dynamic (FORCE=1 to re-quantize)"
+	@echo "    make bench-embedder - Latency + throughput benchmark across 4 embedder backends"
 	@echo ""
 	@echo "  RAG API:"
 	@echo "    make health        - GET /health"
@@ -165,6 +166,11 @@ export-onnx:
 # Idempotent — pass FORCE=1 to re-quantize. Custom paths: use the script directly.
 quantize-onnx:
 	@python scripts/quantize_onnx.py $(if $(FORCE),--force,)
+
+# Embedder backend benchmark: PyTorch-MPS, PyTorch-CPU, ONNX-CPU-FP32, ONNX-CPU-INT8.
+# Reports single-query p50/p95/p99 latency + throughput at batch sizes 1/8/32/128.
+bench-embedder:
+	python benchmarks/bench_embedder.py
 
 # RAG API
 
