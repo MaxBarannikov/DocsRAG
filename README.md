@@ -9,6 +9,7 @@ End-to-end production-grade RAG system over FastAPI documentation (153 markdown 
 - **Evaluation-driven design.** Every retrieval/generation decision is backed by Ragas metrics on a 25-question golden dataset, tracked in MLflow.
 - **Honest negative results.** Tested hybrid search and agentic RAG; both lost to plain dense retrieval on this corpus and the README explains why.
 - **Switchable inference.** Same API code runs against Ollama (dev) or vLLM (prod) via a single env variable. Benchmark on M4 Max: vllm-metal **3.8× faster** than Ollama.
+- **Switchable embedder.** Same factory pattern for `sentence-transformers` (PyTorch on MPS/CUDA/CPU) or ONNX Runtime (FP32 / INT8) via `EMBEDDER_BACKEND`. ONNX-CPU-FP32 single-query latency is **3.2× faster than PyTorch-MPS** on bge-small (1.7 ms p50 vs 5.5 ms).
 - **Cross-language Q&A.** Ask in Russian, get Russian answers — implemented as a thin RU↔EN translation wrapper over the English-only pipeline. No reindex required.
 - **Full observability stack.** Prometheus + Grafana for system metrics, LangFuse for LLM tracing — both fully optional and additive.
 
@@ -26,6 +27,8 @@ These are the non-obvious results from running the full eval pipeline. Each is t
 
 5. **Cosine + normalized embeddings is non-negotiable.** Forgetting `normalize_embeddings=True` in `sentence-transformers` silently breaks retrieval quality without obvious errors. The bug doesn't surface until you measure with Ragas.
 
+6. **ONNX on CPU beat PyTorch on MPS — and INT8 didn't fit.** The bge-small embedder is small enough (30M params) that ORT's per-call overhead + graph optimizations dominate over MPS's GPU dispatch overhead: **ONNX-CPU-FP32 single-query latency is 3.2× faster than PyTorch-MPS** (1.7 ms vs 5.5 ms p50), with byte-identical retrieval (cosine parity = 1.0, Ragas Δ ≤ 0.01). The intuition "GPU should always win" is wrong for sub-100M models. Dynamic INT8 went the other way — `context_recall` dropped 0.070 (12.6% relative), well past the 0.05 acceptance budget, and the model got flagged as unusable for retrieval. INT8 noise is invisible on cosine-of-same-text (0.997) but compounds across top-k ranking. Both results are documented honestly in the [Task 9 section](#task-9--embedder-onnx-optimization) — the negative INT8 result is as informative as the FP32 win.
+
 ## Goals
 
 A production-grade RAG system demonstrating modern MLOps practices:
@@ -41,7 +44,7 @@ A production-grade RAG system demonstrating modern MLOps practices:
 |---|---|
 | API | FastAPI + Pydantic |
 | LLM | Qwen 2.5 7B Instruct via Ollama (dev) / vllm-metal MLX (prod) |
-| Embeddings | BAAI/bge-small-en-v1.5 (384-dim, English, MPS on Apple Silicon) |
+| Embeddings | BAAI/bge-small-en-v1.5 (384-dim, English); swappable backends: PyTorch (MPS/CUDA/CPU), ONNX Runtime FP32, ONNX Runtime INT8 dynamic per-channel |
 | Vector DB | Qdrant (cosine similarity) |
 | Orchestration | LangChain + LangGraph |
 | Retrieval | Dense (Qdrant) + Sparse (BM25) + Cross-encoder reranker |
@@ -138,7 +141,7 @@ make health    # checks that everything is up
 
 The first API start takes ~30–60 s — the embedding model (~130 MB) is being downloaded.
 
-### Step 5 — Index documents (one-time, ~2 min)
+### Step 5 — Index documents
 
 ```bash
 make fetch-docs   # downloads 153 FastAPI docs markdown files into data/raw/
@@ -154,7 +157,7 @@ make ask Q='How do I define a path parameter in FastAPI?'
 
 Expected response in ~3–5 s with source citations (`tutorial/path-params.md`).
 
-### Step 7 — Observability (optional)
+### Step 7 — Observability
 
 ```bash
 make grafana-ui    # http://localhost:3000 — login admin/admin, DocsRAG dashboard
@@ -170,12 +173,12 @@ LANGFUSE_BASE_URL=https://cloud.langfuse.com
 ```
 Get keys at: [cloud.langfuse.com](https://cloud.langfuse.com) → project → Settings → API Keys.
 
-### Step 8 — vllm-metal backend (optional, Apple Silicon only)
+### Step 8 — vllm-metal backend (Apple Silicon only)
 
 Faster inference via MLX (3.8× faster than Ollama on M4 Max). `vllm-metal` 0.2.0 is a plugin to upstream `vllm`, so both packages must be installed into the project venv via `make install-vllm`. They're not in `pyproject.toml` / `uv.lock`: vllm's own pyproject hard-pins CUDA-only deps (`nvidia-cudnn-frontend`, `cuda-python`, `flashinfer-python`...) that have no macOS wheels, and the manual two-phase install (CPU requirements → main build) can't be expressed in uv's universal resolver — verified experimentally.
 
 ```bash
-# 1. Install vllm core + vllm-metal plugin into .venv (~5-15 min; builds vllm from source)
+# 1. Install vllm core + vllm-metal plugin into .venv (builds vllm from source)
 source .venv/bin/activate
 make install-vllm
 
@@ -197,7 +200,7 @@ Versions are pinned via `VLLM_VERSION` / `VLLM_METAL_WHEEL` variables at the top
 
 **Caveat:** installing `vllm` pulls a large dependency tree (torch, transformers, kernels) and overrides versions of packages also used by the RAG pipeline. After install run `make health` to confirm the API still starts. If you ever run `uv pip sync uv.lock`, vllm + metal will be removed — just re-run `make install-vllm`.
 
-### Step 9 — Run evaluation (optional, ~15 min)
+### Step 9 — Run evaluation
 
 ```bash
 # Ollama (baseline)
@@ -206,6 +209,44 @@ make eval CONFIG=configs/chunk_1024.yaml
 # vllm-metal (requires a running vllm-metal server)
 INFERENCE_BACKEND=vllm uv run python evaluation/run_eval.py --config configs/chunk_1024.yaml
 ```
+
+### Step 10 — ONNX embedder backend
+
+The embedder can run on three swappable backends: `pytorch` (default), `onnx-fp32`, `onnx-int8`. Switch via `EMBEDDER_BACKEND` in `.env`. ONNX is an opt-in extra (~200 MB of deps) — installed separately to keep CI lean.
+
+```bash
+# 1. Install [onnx] extra into the venv
+source .venv/bin/activate
+make install-onnx
+
+# 2. Export bge-small to ONNX FP32 (produces models/bge-small-en-v1.5-onnx-fp32/, 127 MB)
+make export-onnx
+
+# 3. Quantize FP32 → INT8 dynamic per-channel (produces models/bge-small-en-v1.5-onnx-int8/, 32 MB)
+make quantize-onnx
+
+# 4. Validate parity vs PyTorch baseline (cosine > 0.9999 expected; actual: 1.000000 across 120 chunks)
+pytest tests/test_embedder_parity.py -v -s
+
+# 5. Reindex into the two collections (docsrag → ONNX FP32 vectors, docsrag_int8 → ONNX INT8 vectors).
+#    Each ~30-60 s. Skip these if you only want to bench latency without changing the index.
+make reindex-onnx
+make reindex-int8
+
+# 6. Bench 4 backends — PyTorch-MPS/CPU vs ONNX-CPU FP32/INT8
+make bench-embedder
+
+# 7. Run Ragas eval for each ONNX backend
+make eval CONFIG=configs/onnx_fp32.yaml
+make eval CONFIG=configs/onnx_int8.yaml
+
+# 8. Switch the API to ONNX backend (optional — default stays pytorch)
+echo "EMBEDDER_BACKEND=onnx-fp32" >> .env
+make restart
+make health    # should show "embedder_backend": "onnx-fp32"
+```
+
+See [Task 9 — Embedder ONNX optimization](#task-9--embedder-onnx-optimization) below for the numeric results and architectural decisions.
 
 ## API
 
@@ -387,6 +428,85 @@ uv run python benchmarks/bench_backends.py
 # 6. Run Ragas eval on vllm
 INFERENCE_BACKEND=vllm uv run python evaluation/run_eval.py --config configs/chunk_1024.yaml
 ```
+
+## Task 9 — Embedder ONNX optimization
+
+Swappable embedder backend mirroring Task 8's `make_llm()` pattern: same factory, three runtimes. Demonstrates ONNX Runtime + dynamic INT8 quantization on a classical-ML serving stack (the LLM serving from Task 8 is the other half).
+
+### Backends
+
+| Backend | Model file | Size | Where it reads / writes |
+|---|---|---|---|
+| `pytorch` | HF `BAAI/bge-small-en-v1.5` | ~130 MB | `docsrag` collection |
+| `onnx-fp32` | `models/bge-small-en-v1.5-onnx-fp32/model.onnx` | 127 MB | `docsrag` collection (parity-equivalent to PyTorch) |
+| `onnx-int8` | `models/bge-small-en-v1.5-onnx-int8/model.onnx` | 32 MB | `docsrag_int8` collection (separate — vectors differ) |
+
+Selected via `EMBEDDER_BACKEND` env var. `settings.active_qdrant_collection` routes Qdrant queries to the right collection automatically (see `api/config.py`).
+
+### Single-query latency benchmark (M4 Max, `make bench-embedder`, 50 runs warm)
+
+| Backend | p50 | p95 | p99 |
+|---|---|---|---|
+| PyTorch-MPS | 5.5 ms | 8.6 ms | 8.8 ms |
+| PyTorch-CPU | 6.5 ms | 7.0 ms | 7.6 ms |
+| **ONNX-CPU-FP32** | **1.7 ms** | **1.8 ms** | **1.9 ms** |
+| ONNX-CPU-INT8 | 1.5 ms | 2.6 ms | 3.3 ms |
+
+**Headline:** ONNX-CPU-FP32 is **3.2× faster than PyTorch-MPS** on single-query latency. The intuition "MPS GPU should win for embeddings" doesn't hold for small models — bge-small is 30M params, and the per-call MPS dispatch overhead + Python ↔ Metal boundary cost dominates over the actual matrix math. ONNX Runtime minimizes that overhead, applies graph-level optimizations (operator fusion, constant folding), and pays no GPU-roundtrip cost. INT8 wins p50 by another ~12% but has 1.7× worse p99 — quantization adds tail variance.
+
+### Throughput benchmark (vectors/sec)
+
+| Backend | bs=1 | bs=8 | bs=32 | bs=128 |
+|---|---|---|---|---|
+| PyTorch-MPS | 146 | 322 | 210 | **360** |
+| PyTorch-CPU | 59 | 110 | 82 | 135 |
+| ONNX-CPU-FP32 | 107 | 62 | 33 | 39 |
+| ONNX-CPU-INT8 | 80 | 78 | 36 | 41 |
+
+**Workload mapping:** ONNX-CPU-FP32 for `/ask` (latency wins). PyTorch-MPS for `make reindex` (throughput wins at bs≥8 — **9× faster** than ONNX at bs=128). The ONNX throughput drop at larger batches is most likely caused by per-batch padding to the longest sequence — ORT runs the full attention pattern regardless of attention mask, while `sentence-transformers` has more efficient masked-attention paths. Not blocking for production (single-query path is what `/ask` uses), and a known investigation deferred.
+
+### Quality validation
+
+**PyTorch ↔ ONNX FP32 parity** (`tests/test_embedder_parity.py`, 120 real chunks):
+
+```
+parity OK across 120 chunks: cosine min=1.000000, mean=1.000000, max=1.000000
+```
+
+Byte-perfect numerical equivalence — `optimum-cli export onnx` traces the existing `sentence-transformers` Python code into the graph, including the pooling and L2 normalization. We read the graph-baked `sentence_embedding` output directly (no manual pooling in our wrapper), so there's no implementation gap to drift through.
+
+**ONNX FP32 ↔ INT8 quantization noise** (120 chunks):
+
+| | per-tensor (rejected) | per-channel (production) |
+|---|---|---|
+| mean cosine | 0.9759 | **0.9973** |
+| min cosine | 0.9456 | 0.9816 |
+| chunks below 0.99 | 100% | 1.7% |
+| size | 32.25 MB | 32.45 MB |
+
+Per-channel quantization (own zero-point / scale per channel) recovers almost all the parity loss at +0.2 MB cost. Per-tensor would have likely blown the Ragas budget; per-channel keeps it safe. The `--per-tensor` flag in `scripts/quantize_onnx.py` preserves the alt variant for reproducibility.
+
+### Ragas evaluation — end-to-end gate
+
+Each ONNX backend is graded by Ragas against the same 25-question golden dataset, with strict budgets vs the cached PyTorch `chunk_1024` baseline. Acceptance: FP32 must stay within ±0.02 on all four metrics; INT8 may drop faithfulness / context_recall by at most 0.05 before being flagged unusable.
+
+| Metric | PyTorch baseline | ONNX FP32 | Δ FP32 | ONNX INT8 | Δ INT8 |
+|---|---|---|---|---|---|
+| faithfulness | 0.882 | 0.889 | +0.007 | 0.873 | −0.009 |
+| answer_relevancy | 0.886 | 0.886 | −0.001 | 0.867 | −0.019 |
+| context_precision | 0.598 | 0.598 | ≈0 | 0.589 | −0.009 |
+| context_recall | 0.557 | 0.557 | ≈0 | **0.487** | **−0.070** |
+
+**ONNX FP32 — PASS.** Every delta within ±0.01; retrieval-metrics byte-identical to PyTorch (direct consequence of cosine 1.0 parity); generation-metrics within LLM-as-judge noise. Combined with the 3.2× single-query latency win above, ONNX FP32 is a strict improvement over PyTorch-MPS on `/ask`. Switching the API to `EMBEDDER_BACKEND=onnx-fp32` is a no-quality-cost upgrade.
+
+**ONNX INT8 — FAIL.** `context_recall` dropped 0.070, exceeding the 0.05 budget. The 0.997 mean cosine vs FP32 turns into top-5 reshuffling that drops borderline-relevant chunks: precision stays fine (graded chunks are still relevant), but coverage is not. **INT8 is documented as unusable for production embedding on this model** and kept only as a benchmark artifact in `docsrag_int8`. This is a small-model-specific failure mode — bge-small is ~30M params, where dynamic INT8 noise has nowhere to hide. Larger encoders (`bge-base` 110M, `bge-large` 335M) typically tolerate INT8 much better; if switching the embedder model upwards in the future, re-run the quantization + Ragas gate before drawing a verdict for that model.
+
+Static quantization with a calibration set is the documented escalation path for trying to recover INT8 quality, but on a personal-project budget the negative result is itself the deliverable — measuring honestly that INT8 doesn't work here is more informative than bashing on it until it does. Numbers above live in MLflow under experiment `docsrag-rag-eval` (`make mlflow-ui`).
+
+### Reproducibility
+
+Steps 10.1–10.8 in [Quick Start](#step-10--onnx-embedder-backend-optional-task-9-reproduction) above walk through the full Task 9 reproduction from a fresh checkout: install the extra, export, quantize, parity-test, reindex, benchmark, eval, switch the API. Each step is idempotent and gated by the previous one.
+
 ## Lessons Learned
 
 Things this project taught me that aren't in any RAG tutorial:
@@ -404,7 +524,7 @@ The single `INFERENCE_BACKEND` env var is the difference between a one-off demo 
 LangFuse and Prometheus were added in Task 7 with zero changes to the RAG pipeline logic. The pipeline doesn't know whether tracing is on. If observability is invasive (callbacks threading through business logic, conditional code paths for "metrics enabled"), it gets ripped out the first time it breaks something. Decouple it.
 
 **5. Embed once, embed everywhere — but make sure it's literally the same embedder.**  
-The same `EmbeddingModel` instance handles both indexing and query-time encoding. Using a different LangChain wrapper at query time (even one that "should" be equivalent) silently degrades retrieval because of subtle differences in pooling/normalization. The bug doesn't crash, it just makes things slightly worse. Eval would catch it; trust wouldn't.
+Both `indexing/run_indexing.py` and `api/rag.py` go through the same `embeddings.factory.make_embedder()` factory. Using a different LangChain wrapper at query time (even one that "should" be equivalent) silently degrades retrieval because of subtle differences in pooling/normalization. The bug doesn't crash, it just makes things slightly worse. Eval would catch it; trust wouldn't. This is also why Task 9's ONNX backend was validated with a hard cosine-parity gate (`tests/test_embedder_parity.py`, threshold 0.9999) before being trusted to read the existing index — the parity test would have caught any pooling drift between the PyTorch wrapper and the ONNX graph.
 
 **6. Honest negative results > impressive demos.**  
 Showing that hybrid+rerank lost to dense, and that agentic RAG sacrificed recall for precision, is more interesting than claiming everything got better. Anyone can build a stack of trendy components; understanding the trade-offs is the actual MLOps skill.
@@ -459,33 +579,48 @@ docsrag/
 │   ├── prompts.py    # System + user + translation prompts
 │   ├── schemas.py    # Pydantic request/response models
 │   └── config.py     # Pydantic Settings
+├── embeddings/       # Embedder backends (Task 9)
+│   ├── pytorch.py    # PytorchEmbedder (sentence-transformers, MPS/CUDA/CPU)
+│   ├── onnx.py       # OnnxEmbedder (raw onnxruntime, sentence_embedding output)
+│   └── factory.py    # make_embedder(backend) — picks by EMBEDDER_BACKEND
 ├── indexing/         # Indexing pipeline (Task 2)
 │   ├── loader.py     # Markdown loader
 │   ├── chunker.py    # Hierarchical chunker (header + recursive)
-│   ├── embeddings.py # EmbeddingModel (sentence-transformers)
-│   └── qdrant_store.py
+│   ├── qdrant_store.py
+│   ├── run_indexing.py
+│   └── smoke_test.py
 ├── evaluation/       # Evaluation framework (Task 4)
 │   ├── golden_dataset.json  # 25 hand-verified Q&A pairs
-│   └── run_eval.py          # Ragas + MLflow eval harness
+│   └── run_eval.py          # Ragas + MLflow eval harness (honours embedder_backend in YAML)
 ├── configs/          # Experiment configs (YAML)
 │   ├── baseline.yaml
 │   ├── chunk_256.yaml
 │   ├── chunk_1024.yaml      # dense baseline (frozen)
 │   ├── hybrid.yaml          # dense + BM25 → RRF
 │   ├── hybrid_rerank.yaml   # dense + BM25 → RRF + cross-encoder
+│   ├── agentic.yaml         # LangGraph agentic RAG (Task 6)
+│   ├── onnx_fp32.yaml       # chunk_1024 + EMBEDDER_BACKEND=onnx-fp32 (Task 9)
+│   ├── onnx_int8.yaml       # chunk_1024 + EMBEDDER_BACKEND=onnx-int8 (Task 9)
 │   ├── topk_3.yaml
 │   └── topk_10.yaml
+├── scripts/          # One-off operational scripts (Task 9)
+│   ├── export_onnx.py    # bge → ONNX FP32 via optimum-cli
+│   └── quantize_onnx.py  # FP32 → INT8 (dynamic, per-channel)
+├── models/           # ONNX-exported models (gitignored, ~160 MB total)
 ├── observability/    # Task 7 — Prometheus, Grafana, LangFuse
-├── benchmarks/       # Task 8 — vLLM benchmarks
+├── benchmarks/
+│   ├── bench_backends.py  # Ollama vs vllm-metal (Task 8)
+│   └── bench_embedder.py  # PyTorch-MPS/CPU vs ONNX-CPU FP32/INT8 (Task 9)
 ├── tests/
+│   └── test_embedder_parity.py  # PyTorch ↔ ONNX FP32 cosine parity gate (Task 9)
 ├── docker-compose.yml
 └── Makefile
 ```
 
 ## Current State
 
-- **Qdrant collection:** `docsrag`, 2540 chunks, chunk\_size=1024, overlap=100
-- **Embeddings:** `BAAI/bge-small-en-v1.5` — 384-dim, English, normalized cosine similarity
+- **Qdrant collections:** `docsrag` (2540 chunks, shared by `pytorch` and `onnx-fp32` backends — parity-equivalent), `docsrag_int8` (2540 chunks, `onnx-int8` backend). Both at chunk\_size=1024, overlap=100.
+- **Embeddings:** `BAAI/bge-small-en-v1.5` — 384-dim, English, normalized cosine similarity. Three swappable runtimes via `EMBEDDER_BACKEND` env var: `pytorch` (default), `onnx-fp32`, `onnx-int8`.
 - **Retrieval strategy:** dense vector search (best by eval); hybrid and hybrid\_rerank available via config
 - **Generation:** `temperature=0.0` for determinism; answers cite sources as `[file.md]`
 - **Inference backend:** `INFERENCE_BACKEND=ollama` (default) or `vllm` — switchable via `.env`
@@ -501,13 +636,20 @@ make build         # Build API Docker image
 make health        # GET /health
 make ask Q="..."   # POST /ask
 make warmup        # Load LLM into Ollama RAM (run after make up)
-make reindex                                      # Recreate with defaults (chunk_size=1024, overlap=100)
+make reindex                                      # Recreate the active collection (CHUNK_SIZE=1024 OVERLAP=100 defaults; honours EMBEDDER_BACKEND)
 make reindex CHUNK_SIZE=512 CHUNK_OVERLAP=50      # Override chunk params
+make reindex-onnx                                 # Recreate docsrag with EMBEDDER_BACKEND=onnx-fp32 (Task 9)
+make reindex-int8                                 # Recreate docsrag_int8 with EMBEDDER_BACKEND=onnx-int8 (Task 9)
 make smoke         # Retrieval sanity check
-make eval          # Run evaluation (CONFIG=configs/baseline.yaml by default)
+make eval          # Run evaluation (CONFIG=configs/baseline.yaml by default; pass CONFIG=configs/onnx_*.yaml for ONNX)
 make mlflow-ui     # Open MLflow UI in browser
 make prometheus-ui # Open Prometheus UI (http://localhost:9090)
 make grafana-ui    # Open Grafana dashboard (http://localhost:3000, admin/admin)
+# ONNX (Task 9, opt-in)
+make install-onnx     # uv pip install -e ".[onnx]" — adds optimum + onnxruntime
+make export-onnx      # bge-small → models/bge-small-en-v1.5-onnx-fp32/ (FORCE=1 to re-export)
+make quantize-onnx    # FP32 → INT8 dynamic per-channel → models/bge-small-en-v1.5-onnx-int8/
+make bench-embedder   # Latency + throughput across PyTorch-MPS/CPU + ONNX-CPU FP32/INT8
 make lint          # ruff
 make format        # ruff --fix + black
 make type-check    # mypy
