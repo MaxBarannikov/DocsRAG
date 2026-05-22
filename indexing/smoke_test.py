@@ -11,7 +11,7 @@ import sys
 from loguru import logger
 
 from api.config import settings
-from indexing.embeddings import EmbeddingModel
+from embeddings import PytorchEmbedder
 from indexing.qdrant_store import QdrantStore
 
 
@@ -26,7 +26,7 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    embedder = EmbeddingModel(settings.embedding_model)
+    embedder = PytorchEmbedder(settings.embedding_model)
     store = QdrantStore(
         url=settings.qdrant_url,
         collection_name=args.collection,

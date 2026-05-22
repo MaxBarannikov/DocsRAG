@@ -1,11 +1,9 @@
-"""Sentence-transformer embeddings wrapper.
+"""PyTorch sentence-transformers embedder.
 
-Uses BAAI/bge-small-en-v1.5 — 384-dim, English, normalized cosine similarity.
-e5 models require task prefixes: pass prefix="query: " at query time and
-prefix="passage: " at indexing time for best retrieval quality.
-
-The model is loaded once and reused. On Apple Silicon, sentence-transformers
-will automatically use MPS (Metal) backend if available.
+Default: BAAI/bge-small-en-v1.5 (384-dim, normalized cosine). MPS on Apple
+Silicon, CUDA elsewhere, CPU fallback. Used at both index- and query-time —
+pooling/normalization parity between phases is mandatory (see CLAUDE.md
+"Embedder reuse").
 """
 
 from collections.abc import Sequence
@@ -15,12 +13,12 @@ from loguru import logger
 from sentence_transformers import SentenceTransformer
 
 
-class EmbeddingModel:
-    """Thin wrapper around SentenceTransformer with batched encoding."""
+class PytorchEmbedder:
+    """sentence-transformers wrapper with batched encoding and L2 normalization."""
 
     def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5") -> None:
         device = self._select_device()
-        logger.info(f"Loading embedding model '{model_name}' on device '{device}'")
+        logger.info(f"Loading PyTorch embedder '{model_name}' on device '{device}'")
         self._model = SentenceTransformer(model_name, device=device)
         self.model_name = model_name
         self.dimension = self._model.get_embedding_dimension()

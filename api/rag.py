@@ -16,7 +16,7 @@ from api.config import settings
 from api.llm import make_llm
 from api.prompts import PROMPT
 from api.schemas import Source
-from indexing.embeddings import EmbeddingModel
+from embeddings import PytorchEmbedder
 
 if TYPE_CHECKING:
     from qdrant_client.models import ScoredPoint
@@ -61,7 +61,7 @@ class RAGPipeline:
 
         # Embedder: same model used during indexing — guarantees identical
         # vector space and pooling/normalization between index- and query-time.
-        self._embedder = EmbeddingModel(model_name=settings.embedding_model)
+        self._embedder = PytorchEmbedder(model_name=settings.embedding_model)
 
         # Qdrant: direct client — bypasses langchain-qdrant metadata handling
         # which changed in 0.2.x. Our payload is flat: text, source_path,

@@ -17,6 +17,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-dev
 
 # Now copy the project and install it
+COPY embeddings/ ./embeddings/
 COPY api/ ./api/
 COPY indexing/ ./indexing/
 RUN --mount=type=cache,target=/root/.cache/uv \

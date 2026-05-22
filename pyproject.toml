@@ -38,9 +38,17 @@ dev = [
     "pytest-cov>=7.0.0",
     "pytest-mock>=3.15.1",
 ]
+onnx = [
+    # optimum 2.x split the ONNX exporter into its own package (optimum-onnx).
+    # We list both explicitly — the `[exporters]` extra from optimum 1.x is gone.
+    "optimum>=2.0.0",
+    "optimum-onnx>=0.1.0",
+    "onnx>=1.15.0",
+    "onnxruntime>=1.18.0",
+]
 
 [tool.setuptools.packages.find]
-include = ["api*", "indexing*", "evaluation*"]
+include = ["api*", "embeddings*", "indexing*", "evaluation*"]
 
 [tool.mypy]
 python_version = "3.12"

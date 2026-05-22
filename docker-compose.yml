@@ -86,6 +86,7 @@ services:
       # want to test the image as-built, remove these two lines.
       - ./api:/app/api:ro
       - ./indexing:/app/indexing:ro
+      - ./embeddings:/app/embeddings:ro
     depends_on:
       qdrant:
         condition: service_healthy

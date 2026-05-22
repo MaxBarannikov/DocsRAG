@@ -19,8 +19,8 @@ import time
 from loguru import logger
 
 from api.config import settings
+from embeddings import PytorchEmbedder
 from indexing.chunker import chunk_documents
-from indexing.embeddings import EmbeddingModel
 from indexing.loader import load_markdown_files
 from indexing.qdrant_store import QdrantStore
 
@@ -91,7 +91,7 @@ def main() -> int:
         return 1
 
     # 3. Embed
-    embedder = EmbeddingModel(args.embedding_model)
+    embedder = PytorchEmbedder(args.embedding_model)
     texts = [c.text for c in chunks]
     logger.info(f"Encoding {len(texts)} chunks...")
     embeddings = embedder.encode(texts, show_progress=True)

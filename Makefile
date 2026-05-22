@@ -12,7 +12,7 @@ endif
         fetch-docs index reindex smoke \
         build rebuild restart api-logs api-shell health ask warmup \
         eval mlflow-ui prometheus-ui grafana-ui \
-        install-vllm vllm-start vllm-status clean
+        install-vllm vllm-start vllm-status install-onnx clean
 
 # Default question for `make ask` if Q is not provided
 Q ?= How do I define a path parameter in FastAPI?
@@ -36,6 +36,7 @@ help:
 	@echo "    make install-vllm  - Install vllm + vllm-metal plugin into .venv (macOS arm64 only)"
 	@echo "    make vllm-start    - Start vllm-metal server (VLLM_MODEL / VLLM_PORT overridable)"
 	@echo "    make vllm-status   - Check vllm-metal status"
+	@echo "    make install-onnx  - Install ONNX Runtime + optimum into .venv (optional, for Task 9 work)"
 	@echo ""
 	@echo "  RAG API:"
 	@echo "    make health        - GET /health"
@@ -138,6 +139,15 @@ vllm-start:
 
 vllm-status:
 	@curl -sf http://127.0.0.1:$(VLLM_PORT)/v1/models > /dev/null && echo "✓ vllm-metal responding on port $(VLLM_PORT)" || echo "✗ vllm-metal not running — run 'make vllm-start'"
+
+# ONNX Runtime + optimum add ~200MB to the venv (ORT + onnx + protobuf + huggingface
+# exporters), unnecessary for the default PyTorch-MPS path. Kept as an opt-in extra
+# so CI stays lean and `make install` doesn't drag it in.
+install-onnx:
+	@test -n "$$VIRTUAL_ENV" || { echo "✗ Activate project venv first: source .venv/bin/activate"; exit 1; }
+	uv pip install -e ".[onnx]"
+	@echo "→ Verifying ONNX Runtime install:"
+	@python -c "import onnxruntime as ort; print('ONNX Runtime', ort.__version__, '| providers:', ort.get_available_providers())"
 
 # RAG API
 
