@@ -233,14 +233,17 @@ pytest tests/test_embedder_parity.py -v -s
 make reindex-onnx
 make reindex-int8
 
-# 6. Bench 4 backends — PyTorch-MPS/CPU vs ONNX-CPU FP32/INT8
+# 6. (Optional bonus) Trace bge backbone to TorchScript .pt for an extra bench row
+make export-torchscript
+
+# 7. Bench 4 backends (or 5 if TorchScript .pt exists) — ~2-3 min
 make bench-embedder
 
-# 7. Run Ragas eval for each ONNX backend
+# 8. Run Ragas eval for each ONNX backend
 make eval CONFIG=configs/onnx_fp32.yaml
 make eval CONFIG=configs/onnx_int8.yaml
 
-# 8. Switch the API to ONNX backend (optional — default stays pytorch)
+# 9. Switch the API to ONNX backend (optional — default stays pytorch)
 echo "EMBEDDER_BACKEND=onnx-fp32" >> .env
 make restart
 make health    # should show "embedder_backend": "onnx-fp32"
@@ -443,27 +446,29 @@ Swappable embedder backend mirroring Task 8's `make_llm()` pattern: same factory
 
 Selected via `EMBEDDER_BACKEND` env var. `settings.active_qdrant_collection` routes Qdrant queries to the right collection automatically (see `api/config.py`).
 
-### Single-query latency benchmark (M4 Max, `make bench-embedder`, 50 runs warm)
+### Single-query latency benchmark (M4 Max, `make bench-embedder`, 50 runs, 10 warmup)
 
 | Backend | p50 | p95 | p99 |
 |---|---|---|---|
-| PyTorch-MPS | 5.5 ms | 8.6 ms | 8.8 ms |
-| PyTorch-CPU | 6.5 ms | 7.0 ms | 7.6 ms |
-| **ONNX-CPU-FP32** | **1.7 ms** | **1.8 ms** | **1.9 ms** |
-| ONNX-CPU-INT8 | 1.5 ms | 2.6 ms | 3.3 ms |
+| PyTorch-MPS | 5.7 ms | 9.0 ms | 9.2 ms |
+| PyTorch-CPU | 6.7 ms | 7.1 ms | 7.4 ms |
+| TorchScript-CPU | 4.7 ms | 4.9 ms | 4.9 ms |
+| **ONNX-CPU-FP32** | **1.7 ms** | **1.8 ms** | **1.8 ms** |
+| ONNX-CPU-INT8 | 1.5 ms | 1.6 ms | 1.7 ms |
 
-**Headline:** ONNX-CPU-FP32 is **3.2× faster than PyTorch-MPS** on single-query latency. The intuition "MPS GPU should win for embeddings" doesn't hold for small models — bge-small is 30M params, and the per-call MPS dispatch overhead + Python ↔ Metal boundary cost dominates over the actual matrix math. ONNX Runtime minimizes that overhead, applies graph-level optimizations (operator fusion, constant folding), and pays no GPU-roundtrip cost. INT8 wins p50 by another ~12% but has 1.7× worse p99 — quantization adds tail variance.
+**Headline:** ONNX-CPU-FP32 is **3.4× faster than PyTorch-MPS** on single-query latency. The intuition "MPS GPU should win for embeddings" doesn't hold for small models — bge-small is 30M params, and the per-call MPS dispatch overhead + Python ↔ Metal boundary cost dominates over the actual matrix math. ONNX Runtime minimizes that overhead and applies graph-level optimizations (operator fusion, constant folding) that pay no GPU-roundtrip cost. TorchScript-CPU gives a modest ~30% win over plain PyTorch-CPU (graph freezing + IR optimizations) but doesn't approach ONNX — TorchScript's IR is shallower than ORT's optimization pipeline. INT8 trims another ~12% on p50 with no longer the tail-variance issue we saw on the earlier run.
 
 ### Throughput benchmark (vectors/sec)
 
 | Backend | bs=1 | bs=8 | bs=32 | bs=128 |
 |---|---|---|---|---|
-| PyTorch-MPS | 146 | 322 | 210 | **360** |
-| PyTorch-CPU | 59 | 110 | 82 | 135 |
-| ONNX-CPU-FP32 | 107 | 62 | 33 | 39 |
-| ONNX-CPU-INT8 | 80 | 78 | 36 | 41 |
+| PyTorch-MPS | 156 | 319 | 206 | **351** |
+| PyTorch-CPU | 57 | 106 | 80 | 135 |
+| TorchScript-CPU | 62 | 115 | 83 | 97 |
+| ONNX-CPU-FP32 | 106 | 64 | 32 | 38 |
+| ONNX-CPU-INT8 | 78 | 76 | 35 | 41 |
 
-**Workload mapping:** ONNX-CPU-FP32 for `/ask` (latency wins). PyTorch-MPS for `make reindex` (throughput wins at bs≥8 — **9× faster** than ONNX at bs=128). The ONNX throughput drop at larger batches is most likely caused by per-batch padding to the longest sequence — ORT runs the full attention pattern regardless of attention mask, while `sentence-transformers` has more efficient masked-attention paths. Not blocking for production (single-query path is what `/ask` uses), and a known investigation deferred.
+**Workload mapping:** ONNX-CPU-FP32 for `/ask` (latency wins). PyTorch-MPS for `make reindex` (throughput wins at bs≥8 — **9× faster** than ONNX at bs=128). The ONNX throughput drop at larger batches is most likely caused by per-batch padding to the longest sequence — ORT runs the full attention pattern regardless of attention mask, while `sentence-transformers` and TorchScript have more efficient masked-attention paths (TorchScript scales like PyTorch-CPU, no drop, confirming the bottleneck is ORT-specific). Not blocking for production (single-query path is what `/ask` uses), investigation deferred.
 
 ### Quality validation
 
@@ -604,8 +609,9 @@ docsrag/
 │   ├── topk_3.yaml
 │   └── topk_10.yaml
 ├── scripts/          # One-off operational scripts (Task 9)
-│   ├── export_onnx.py    # bge → ONNX FP32 via optimum-cli
-│   └── quantize_onnx.py  # FP32 → INT8 (dynamic, per-channel)
+│   ├── export_onnx.py        # bge → ONNX FP32 via optimum-cli
+│   ├── quantize_onnx.py      # FP32 → INT8 (dynamic, per-channel)
+│   └── export_torchscript.py # bge backbone → TorchScript .pt (bench-only artifact)
 ├── models/           # ONNX-exported models (gitignored, ~160 MB total)
 ├── observability/    # Task 7 — Prometheus, Grafana, LangFuse
 ├── benchmarks/
@@ -649,7 +655,8 @@ make grafana-ui    # Open Grafana dashboard (http://localhost:3000, admin/admin)
 make install-onnx     # uv pip install -e ".[onnx]" — adds optimum + onnxruntime
 make export-onnx      # bge-small → models/bge-small-en-v1.5-onnx-fp32/ (FORCE=1 to re-export)
 make quantize-onnx    # FP32 → INT8 dynamic per-channel → models/bge-small-en-v1.5-onnx-int8/
-make bench-embedder   # Latency + throughput across PyTorch-MPS/CPU + ONNX-CPU FP32/INT8
+make bench-embedder   # Latency + throughput across PyTorch-MPS/CPU + ONNX-CPU FP32/INT8 (+ TorchScript-CPU if exported)
+make export-torchscript # Trace bge backbone to TorchScript .pt — bench-only artifact (Task 9 step 11)
 make lint          # ruff
 make format        # ruff --fix + black
 make type-check    # mypy
