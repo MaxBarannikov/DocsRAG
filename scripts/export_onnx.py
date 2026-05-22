@@ -1,9 +1,14 @@
 """Export a sentence-transformers model to ONNX FP32.
 
-Wraps `optimum-cli export onnx --task feature-extraction`. The output is the
-raw transformer backbone — pooling + L2 normalization are applied in the
-runtime wrapper (embeddings/onnx.py, Task 9 step 4) rather than baked into
-the graph. See CLAUDE.md "Task 9 plan" architectural decision #4 for why.
+Wraps `optimum-cli export onnx --task feature-extraction`. For a
+sentence-transformers model the exported graph has TWO outputs:
+    - `token_embeddings`     : [batch, seq_len, hidden_dim] raw transformer output
+    - `sentence_embedding`   : [batch, hidden_dim]          already pooled + L2-normalized
+
+Our runtime wrapper (embeddings/onnx.py, Task 9 step 4) reads
+`sentence_embedding` directly — pooling and normalization are baked into the
+graph and are byte-identical to PyTorch sentence-transformers. See CLAUDE.md
+"Task 9 plan" architectural decision #4 for why.
 
 Idempotent: if `{output}/model.onnx` already exists, exits 0 without
 re-exporting unless --force is passed.
@@ -33,10 +38,7 @@ def _check_onnx_extra_installed() -> None:
         import optimum  # noqa: F401
     except ImportError as e:
         missing = e.name or "<unknown>"
-        msg = (
-            f"Missing ONNX dependency ({missing!r}). Install the optional extra:\n"
-            "    make install-onnx"
-        )
+        msg = f"Missing ONNX dependency ({missing!r}). Install the optional extra:\n    make install-onnx"
         raise SystemExit(msg) from e
 
 
@@ -74,9 +76,13 @@ def main() -> int:
     output_dir.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        "optimum-cli", "export", "onnx",
-        "--task", "feature-extraction",
-        "--model", args.model,
+        "optimum-cli",
+        "export",
+        "onnx",
+        "--task",
+        "feature-extraction",
+        "--model",
+        args.model,
         str(output_dir),
     ]
     print(f"→ Exporting {args.model} → {output_dir}/")
@@ -91,6 +97,7 @@ def main() -> int:
         return 1
 
     import onnx
+
     print(f"→ Validating ONNX graph: {model_file}")
     onnx.checker.check_model(str(model_file))
 
