@@ -143,10 +143,14 @@ ignore = [
     "E501",     # разрешить использовать строки > 120 символов
 ]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.ruff.lint.extend-per-file-ignores]
 "benchmarks/*" = ["ALL"]
 "evaluation/*" = ["ALL"]
 "indexing/*" = ["ALL"]
 "scripts/*" = ["ALL"]
+"tests/*" = ["ALL"]
 
 
