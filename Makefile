@@ -12,7 +12,7 @@ endif
         fetch-docs index reindex smoke \
         build rebuild restart api-logs api-shell health ask warmup \
         eval mlflow-ui prometheus-ui grafana-ui \
-        install-vllm vllm-start vllm-status install-onnx export-onnx clean
+        install-vllm vllm-start vllm-status install-onnx export-onnx quantize-onnx clean
 
 # Default question for `make ask` if Q is not provided
 Q ?= How do I define a path parameter in FastAPI?
@@ -38,6 +38,7 @@ help:
 	@echo "    make vllm-status   - Check vllm-metal status"
 	@echo "    make install-onnx  - Install ONNX Runtime + optimum into .venv (optional, for Task 9 work)"
 	@echo "    make export-onnx   - Export embedder to ONNX FP32 (ONNX_MODEL=... overridable, FORCE=1 to re-export)"
+	@echo "    make quantize-onnx - Quantize ONNX FP32 → INT8 dynamic (FORCE=1 to re-quantize)"
 	@echo ""
 	@echo "  RAG API:"
 	@echo "    make health        - GET /health"
@@ -155,6 +156,12 @@ install-onnx:
 ONNX_MODEL ?= BAAI/bge-small-en-v1.5
 export-onnx:
 	@python scripts/export_onnx.py --model $(ONNX_MODEL) $(if $(FORCE),--force,)
+
+# Quantize the FP32 ONNX model to INT8 (dynamic, per-tensor).
+# Default input: models/bge-small-en-v1.5-onnx-fp32/ → models/bge-small-en-v1.5-onnx-int8/.
+# Idempotent — pass FORCE=1 to re-quantize. Custom paths: use the script directly.
+quantize-onnx:
+	@python scripts/quantize_onnx.py $(if $(FORCE),--force,)
 
 # RAG API
 
