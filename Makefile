@@ -12,7 +12,7 @@ endif
         fetch-docs index reindex smoke \
         build rebuild restart api-logs api-shell health ask warmup \
         eval mlflow-ui prometheus-ui grafana-ui \
-        install-vllm vllm-start vllm-status install-onnx clean
+        install-vllm vllm-start vllm-status install-onnx export-onnx clean
 
 # Default question for `make ask` if Q is not provided
 Q ?= How do I define a path parameter in FastAPI?
@@ -37,6 +37,7 @@ help:
 	@echo "    make vllm-start    - Start vllm-metal server (VLLM_MODEL / VLLM_PORT overridable)"
 	@echo "    make vllm-status   - Check vllm-metal status"
 	@echo "    make install-onnx  - Install ONNX Runtime + optimum into .venv (optional, for Task 9 work)"
+	@echo "    make export-onnx   - Export embedder to ONNX FP32 (ONNX_MODEL=... overridable, FORCE=1 to re-export)"
 	@echo ""
 	@echo "  RAG API:"
 	@echo "    make health        - GET /health"
@@ -148,6 +149,12 @@ install-onnx:
 	uv pip install -e ".[onnx]"
 	@echo "→ Verifying ONNX Runtime install:"
 	@python -c "import onnxruntime as ort; print('ONNX Runtime', ort.__version__, '| providers:', ort.get_available_providers())"
+
+# Export the embedder to ONNX FP32. Default: bge-small-en-v1.5 → models/bge-small-en-v1.5-onnx-fp32/.
+# Idempotent — pass FORCE=1 to re-export.
+ONNX_MODEL ?= BAAI/bge-small-en-v1.5
+export-onnx:
+	@python scripts/export_onnx.py --model $(ONNX_MODEL) $(if $(FORCE),--force,)
 
 # RAG API
 
