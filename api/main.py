@@ -64,11 +64,12 @@ def health(pipeline: PipelineDep) -> HealthResponse:
 
     return HealthResponse(
         status="ok",
-        qdrant_collection=settings.qdrant_collection,
+        qdrant_collection=settings.active_qdrant_collection,
         qdrant_points=points,
         ollama_model=settings.ollama_model,
         vllm_model=settings.vllm_model,
         embedding_model=settings.embedding_model,
+        embedder_backend=settings.embedder_backend,
         inference_backend=settings.inference_backend,
     )
 

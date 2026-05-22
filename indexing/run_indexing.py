@@ -19,7 +19,7 @@ import time
 from loguru import logger
 
 from api.config import settings
-from embeddings import PytorchEmbedder
+from embeddings import make_embedder
 from indexing.chunker import chunk_documents
 from indexing.loader import load_markdown_files
 from indexing.qdrant_store import QdrantStore
@@ -42,20 +42,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--collection",
         type=str,
-        default=settings.qdrant_collection,
-        help=f"Qdrant collection name (default: {settings.qdrant_collection})",
+        default=settings.active_qdrant_collection,
+        help=f"Qdrant collection (default: routed by EMBEDDER_BACKEND, currently {settings.active_qdrant_collection!r})",
     )
     p.add_argument(
         "--recreate",
         action="store_true",
         help="Drop and recreate the collection before indexing.",
     )
-    p.add_argument(
-        "--embedding-model",
-        type=str,
-        default=settings.embedding_model,
-        help=f"Sentence-transformers model name (default: {settings.embedding_model})",
-    )
+    # Embedder is selected via EMBEDDER_BACKEND env var; the underlying model
+    # (HF id for pytorch, dir path for onnx) lives in api/config.py settings.
+    # No --embedding-model CLI flag: it would have backend-dependent semantics
+    # and only the pytorch path historically used it.
     return p.parse_args()
 
 
@@ -70,7 +68,7 @@ def main() -> int:
     logger.info(f"Collection:       {args.collection}")
     logger.info(f"Chunk size:       {args.chunk_size}")
     logger.info(f"Overlap:          {args.overlap}")
-    logger.info(f"Embedding model:  {args.embedding_model}")
+    logger.info(f"Embedder backend: {settings.embedder_backend}")
     logger.info(f"Recreate:         {args.recreate}")
     logger.info("=" * 60)
 
@@ -91,7 +89,7 @@ def main() -> int:
         return 1
 
     # 3. Embed
-    embedder = PytorchEmbedder(args.embedding_model)
+    embedder = make_embedder()
     texts = [c.text for c in chunks]
     logger.info(f"Encoding {len(texts)} chunks...")
     embeddings = embedder.encode(texts, show_progress=True)

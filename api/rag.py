@@ -16,7 +16,7 @@ from api.config import settings
 from api.llm import make_llm
 from api.prompts import PROMPT
 from api.schemas import Source
-from embeddings import PytorchEmbedder
+from embeddings import make_embedder
 
 if TYPE_CHECKING:
     from qdrant_client.models import ScoredPoint
@@ -59,9 +59,10 @@ class RAGPipeline:
         logger.info("Initializing RAGPipeline (strategy={})", retrieval_strategy)
         self._strategy = retrieval_strategy
 
-        # Embedder: same model used during indexing — guarantees identical
+        # Embedder: same backend used during indexing — guarantees identical
         # vector space and pooling/normalization between index- and query-time.
-        self._embedder = PytorchEmbedder(model_name=settings.embedding_model)
+        # Backend is picked by EMBEDDER_BACKEND env var (see embeddings.factory).
+        self._embedder = make_embedder()
 
         # Qdrant: direct client — bypasses langchain-qdrant metadata handling
         # which changed in 0.2.x. Our payload is flat: text, source_path,
@@ -80,7 +81,7 @@ class RAGPipeline:
         active_model = settings.vllm_model if settings.inference_backend == "vllm" else settings.ollama_model
         logger.info(
             "RAGPipeline ready | collection={} | backend={} | model={} | strategy={}",
-            settings.qdrant_collection,
+            settings.active_qdrant_collection,
             settings.inference_backend,
             active_model,
             retrieval_strategy,
@@ -107,7 +108,7 @@ class RAGPipeline:
     def _dense_retrieve(self, query: str, top_k: int) -> list[RetrievalHit]:
         query_vector = self._embedder.encode([query], show_progress=False)[0]
         response = self._qdrant_client.query_points(
-            collection_name=settings.qdrant_collection,
+            collection_name=settings.active_qdrant_collection,
             query=query_vector,
             limit=top_k,
             with_payload=True,
@@ -200,7 +201,7 @@ class RAGPipeline:
 
     def collection_points_count(self) -> int:
         """Number of points in the Qdrant collection (used by /health)."""
-        info = self._qdrant_client.count(collection_name=settings.qdrant_collection, exact=True)
+        info = self._qdrant_client.count(collection_name=settings.active_qdrant_collection, exact=True)
         return int(info.count)
 
     @staticmethod

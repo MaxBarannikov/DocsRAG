@@ -18,7 +18,8 @@ if TYPE_CHECKING:
     from qdrant_client import QdrantClient
 
     from api.rag import RetrievalHit
-    from embeddings import PytorchEmbedder
+    from embeddings.onnx import OnnxEmbedder
+    from embeddings.pytorch import PytorchEmbedder
 
 BM25_INDEX_PATH = Path("data/bm25_index.pkl")
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
@@ -131,7 +132,7 @@ class HybridRetriever:
 
     def __init__(
         self,
-        embedder: PytorchEmbedder,
+        embedder: PytorchEmbedder | OnnxEmbedder,
         qdrant_client: QdrantClient,
         bm25_index: BM25Index,
         reranker: CrossEncoder | None = None,

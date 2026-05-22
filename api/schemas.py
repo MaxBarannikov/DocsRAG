@@ -86,4 +86,5 @@ class HealthResponse(BaseModel):
     ollama_model: str
     vllm_model: str
     embedding_model: str
+    embedder_backend: str = Field(..., description="Active embedder backend: pytorch | onnx-fp32 | onnx-int8")
     inference_backend: str
