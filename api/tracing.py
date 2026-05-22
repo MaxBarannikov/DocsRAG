@@ -13,12 +13,7 @@ from api.config import settings  # noqa: E402 — import after proxy cleanup
 
 
 def get_langfuse_handler(question: str = "") -> Any | None:
-    """Return a LangFuse CallbackHandler for one request trace, or None if not configured.
-
-    Keys are read from LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_HOST
-    env vars (set via .env). Returns None silently when keys are absent so tracing
-    is fully optional — the pipeline works identically without it.
-    """
+    """Return a LangFuse CallbackHandler for this request, or None if tracing is not configured."""
     if not settings.langfuse_public_key or not settings.langfuse_secret_key:
         return None
     try:

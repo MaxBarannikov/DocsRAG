@@ -1,8 +1,6 @@
 """Prompt templates for the RAG pipeline.
 
-Kept in a separate module so prompts can be iterated on without touching
-pipeline code, and so we can A/B test prompt variants in the evaluation
-phase (Task 4).
+Kept in a separate module to decouple prompt iteration from pipeline code.
 """
 
 from __future__ import annotations

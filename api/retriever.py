@@ -146,11 +146,10 @@ class HybridRetriever:
         top_k: int,
         rerank_top_n: int = 20,
     ) -> list[RetrievalHit]:
-        from api.rag import RetrievalHit, _scored_point_to_hit  # local import
+        from api.rag import RetrievalHit, _scored_point_to_hit
 
         fetch_n = max(top_k, rerank_top_n) if self._reranker else top_k
 
-        # Dense leg
         query_vector = self._embedder.encode([query], show_progress=False)[0]
         dense_response = self._qdrant_client.query_points(
             collection_name=settings.qdrant_collection,
@@ -160,10 +159,8 @@ class HybridRetriever:
         )
         dense_hits = [_scored_point_to_hit(p) for p in dense_response.points]
 
-        # Sparse leg
         bm25_hits = self._bm25.search(query, top_n=fetch_n)
 
-        # Merge via RRF
         merged = _rrf_merge(dense_hits, bm25_hits, top_k=fetch_n)
 
         if self._reranker is None:

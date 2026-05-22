@@ -29,8 +29,6 @@ class Source(BaseModel):
 
 
 class AskRequest(BaseModel):
-    """Incoming question payload."""
-
     question: str = Field(
         ...,
         min_length=1,
@@ -51,8 +49,6 @@ class AskRequest(BaseModel):
 
 
 class AskResponse(BaseModel):
-    """RAG answer with attribution."""
-
     question: str
     answer: str
     sources: list[Source]
@@ -84,8 +80,6 @@ class AgentAskResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    """Health check response."""
-
     status: str = Field(default="ok")
     qdrant_collection: str
     qdrant_points: int

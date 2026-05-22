@@ -1,7 +1,7 @@
 """Markdown document loader.
 
 Recursively reads Markdown files from a source directory and produces
-a list of Documents with metadata (source path, relative path, file size).
+a list of RawDocument objects with path metadata.
 """
 
 from dataclasses import dataclass

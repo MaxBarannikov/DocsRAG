@@ -29,7 +29,7 @@ services:
       timeout: 3s
       retries: 5
 
-  # ===== Variant B (Ollama in Docker) — uncomment to switch =====
+  # -- Variant B (Ollama in Docker) — uncomment to switch --
   # ollama:
   #   image: ollama/ollama:latest
   #   container_name: docsrag-ollama

@@ -87,7 +87,6 @@ def main() -> None:
         print(f"  generation: {stats(gen_times)}")
         print(f"  total:      {stats(total_times)}")
 
-    # Comparison summary
     print("\n" + "=" * 70)
     print("Summary")
     print("=" * 70)
@@ -98,7 +97,6 @@ def main() -> None:
         total_avg = statistics.mean(r["total_ms"] for r in results)
         print(f"{label:<40} {gen_avg:>9.0f}ms {total_avg:>9.0f}ms")
 
-    # Speedup
     labels = list(all_results.keys())
     if len(labels) == 2:
         gen_a = statistics.mean(r["generation_ms"] for r in all_results[labels[0]])

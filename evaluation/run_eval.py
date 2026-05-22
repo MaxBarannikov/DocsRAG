@@ -35,17 +35,11 @@ EXPERIMENT_NAME = "docsrag-rag-eval"
 GOLDEN_DATASET_PATH = Path(__file__).parent / "golden_dataset.json"
 
 
-# data
-
-
 def load_dataset(path: Path) -> list[dict[str, str]]:
     with path.open() as f:
         data = json.load(f)
     logger.info("Loaded {} golden samples from {}", len(data), path)
     return data
-
-
-# pipeline
 
 
 def build_pipeline(config: dict[str, Any]):
@@ -96,9 +90,6 @@ def run_pipeline(
         )
 
     return results
-
-
-# metrics
 
 
 def build_ragas_llm(config: dict[str, Any]) -> LangchainLLMWrapper:
@@ -154,9 +145,6 @@ def compute_metrics(
     return scores
 
 
-# mlflow
-
-
 def log_to_mlflow(
     config: dict[str, Any],
     scores: dict[str, float],
@@ -185,9 +173,6 @@ def log_to_mlflow(
         run_url = f"{MLFLOW_TRACKING_URI}/#/experiments/{run.info.experiment_id}/runs/{run.info.run_id}"
 
     return run_url
-
-
-# entrypoint
 
 
 def main() -> None:

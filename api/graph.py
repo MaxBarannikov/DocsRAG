@@ -54,8 +54,6 @@ class GraphState(TypedDict):
 
 
 def build_agent_graph(pipeline: RAGPipeline):
-    """Build and compile the agentic RAG graph around an existing RAGPipeline."""
-
     llm = make_llm(temperature=0.0)
     # Separate grader LLM with json_mode=True so Qwen reliably outputs structured verdicts.
     grader_llm = make_llm(temperature=0.0, json_mode=True)
@@ -261,7 +259,6 @@ class AgentPipeline:
             translation_ms += int((time.perf_counter() - t_tr1) * 1000)
             logger.info("EN→RU (agent) | in={!r} | out={!r}", answer_en, answer)
 
-        # Rebuild sources with the requested include_contexts flag.
         final_hits = result.get("relevant_hits") or result.get("hits", [])
         sources = [self._pipeline._hit_to_source(h, include_contexts=include_contexts) for h in final_hits]
 

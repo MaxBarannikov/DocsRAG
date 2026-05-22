@@ -72,7 +72,6 @@ def health(pipeline: PipelineDep) -> HealthResponse:
 
 @app.post("/ask", response_model=AskResponse)
 def ask(request: AskRequest, pipeline: PipelineDep) -> AskResponse:
-    """Answer a question using retrieval-augmented generation."""
     try:
         answer, sources, timings = pipeline.ask(
             question=request.question,

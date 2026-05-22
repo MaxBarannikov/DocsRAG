@@ -1,6 +1,4 @@
-# syntax=docker/dockerfile:1.7
-
-# ---- Stage 1: build dependencies with uv ----
+# Stage 1: build dependencies with uv
 FROM python:3.12-slim AS builder
 
 # Install uv (fast Rust-based package manager)
@@ -24,7 +22,7 @@ COPY indexing/ ./indexing/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
-# ---- Stage 2: runtime ----
+# Stage 2: runtime
 FROM python:3.12-slim AS runtime
 
 # libgomp1 is required by torch/sentence-transformers on slim images

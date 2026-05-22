@@ -66,13 +66,7 @@ class RAGPipeline:
         # header_path, chunk_index — we map it to Document ourselves.
         self._qdrant_client = QdrantClient(url=settings.qdrant_url)
 
-        # LLM: ChatOllama (Variant A/B) or ChatOpenAI→vLLM, controlled by INFERENCE_BACKEND.
-        # Variant A (current): Ollama native on host, API at host.docker.internal:11434.
-        # Variant B (Ollama in Docker): http://ollama:11434 via compose network.
-        # vLLM: OpenAI-compatible endpoint at VLLM_BASE_URL (vllm-metal locally, CUDA in prod).
         self._llm = make_llm(temperature=0.0)
-
-        # Composed chain: prompt → llm → string output.
         self._chain = PROMPT | self._llm | StrOutputParser()
 
         # Hybrid retriever is built lazily on first use to avoid loading
@@ -102,15 +96,12 @@ class RAGPipeline:
             reranker=reranker,
         )
 
-    # public API
-
     def retrieve(self, query: str, top_k: int, rerank_top_n: int = 20) -> list[RetrievalHit]:
         if self._hybrid_retriever is not None:
             return self._hybrid_retriever.retrieve(query, top_k=top_k, rerank_top_n=rerank_top_n)
         return self._dense_retrieve(query, top_k)
 
     def _dense_retrieve(self, query: str, top_k: int) -> list[RetrievalHit]:
-        """Vector-search the Qdrant collection."""
         query_vector = self._embedder.encode([query], show_progress=False)[0]
         response = self._qdrant_client.query_points(
             collection_name=settings.qdrant_collection,
@@ -128,7 +119,6 @@ class RAGPipeline:
         return hits
 
     def generate(self, question: str, hits: list[RetrievalHit], callbacks: list | None = None) -> str:
-        """Build the prompt from retrieved chunks and call the LLM."""
         context = self._format_context(hits)
         invoke_config = {"callbacks": callbacks} if callbacks else {}
         answer = self._chain.invoke(
@@ -202,18 +192,13 @@ class RAGPipeline:
         )
         return answer, sources, timings
 
-    # diagnostics
-
     def collection_points_count(self) -> int:
         """Number of points in the Qdrant collection (used by /health)."""
         info = self._qdrant_client.count(collection_name=settings.qdrant_collection, exact=True)
         return int(info.count)
 
-    # internals
-
     @staticmethod
     def _format_context(hits: list[RetrievalHit]) -> str:
-        """Render retrieved chunks into a single context string for the prompt."""
         if not hits:
             return "(no relevant context found)"
         blocks: list[str] = []
