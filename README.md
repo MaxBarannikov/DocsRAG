@@ -45,7 +45,9 @@ graph LR
     User[Client] -->|POST /ask| API[FastAPI Service]
 
     subgraph Inference
-        API -->|embed query| Embed[bge-small-en-v1.5<br/>sentence-transformers]
+        API -->|embed query| Emb{Embedder Backend}
+        Emb -->|default| EmbPt[PyTorch MPS/CUDA/CPU<br/>bge-small-en-v1.5]
+        Emb -->|optimized| EmbOnnx[ONNX Runtime CPU<br/>FP32 / INT8]
         API -->|vector search| Qdrant[(Qdrant<br/>2540 chunks)]
         API -->|chat completion| LLM{LLM Backend}
         LLM -->|dev| Ollama[Ollama<br/>Qwen 2.5 7B]
@@ -67,11 +69,11 @@ graph LR
     classDef service fill:#d4e8ff,stroke:#3e5a8a
     classDef obs fill:#d5ffe8,stroke:#3e8a5a
     class Qdrant,MLflow storage
-    class API,Embed,Ollama,vLLM,LLM service
+    class API,EmbPt,EmbOnnx,Emb,Ollama,vLLM,LLM service
     class Prom,LF,Graf,RunEval obs
 ```
 
-The API is the only stateful service. Qdrant holds chunk embeddings; MLflow holds eval runs. Ollama / vLLM are stateless inference servers swapped via `INFERENCE_BACKEND` env var. Observability is fully additive — the system runs unchanged without LangFuse keys or with Prometheus disabled.
+The API is the only stateful service. Qdrant holds chunk embeddings; MLflow holds eval runs. Ollama / vLLM are stateless inference servers swapped via `INFERENCE_BACKEND` env var. The embedder is swappable the same way via `EMBEDDER_BACKEND=pytorch|onnx-fp32|onnx-int8` — ONNX-FP32 cuts single-query latency 3.4× with byte-identical retrieval, INT8 is kept as a benchmark artifact (fails Ragas budget on bge-small). Observability is fully additive — the system runs unchanged without LangFuse keys or with Prometheus disabled.
 
 ## Key Findings
 
