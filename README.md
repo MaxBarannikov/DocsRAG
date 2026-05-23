@@ -36,7 +36,7 @@ A production-grade RAG system demonstrating modern MLOps practices:
 | Evaluation | Ragas + MLflow |
 | Observability | LangFuse, Prometheus, Grafana |
 | Prod inference | vLLM (vllm-metal on Apple Silicon, vllm+CUDA in cloud) |
-| Packaging | Docker Compose, uv |
+| Packaging | Docker, Docker Compose, uv |
 
 ## System Architecture
 
