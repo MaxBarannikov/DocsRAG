@@ -9,7 +9,7 @@ End-to-end production-grade RAG system over FastAPI documentation (153 markdown 
 - **Evaluation-driven design.** Every retrieval/generation decision is backed by Ragas metrics on a 25-question golden dataset, tracked in MLflow.
 - **Honest negative results.** Tested hybrid search and agentic RAG; both lost to plain dense retrieval on this corpus and the README explains why.
 - **Switchable inference.** Same API code runs against Ollama (dev) or vLLM (prod) via a single env variable. Benchmark on M4 Max: vllm-metal **3.8× faster** than Ollama.
-- **Switchable embedder.** Same factory pattern for `sentence-transformers` (PyTorch on MPS/CUDA/CPU) or ONNX Runtime (FP32 / INT8) via `EMBEDDER_BACKEND`. ONNX-CPU-FP32 single-query latency is **3.2× faster than PyTorch-MPS** on bge-small (1.7 ms p50 vs 5.5 ms).
+- **Switchable embedder.** Same factory pattern for `sentence-transformers` (PyTorch on MPS/CUDA/CPU) or ONNX Runtime (FP32 / INT8) via `EMBEDDER_BACKEND`. ONNX-CPU-FP32 single-query latency is **3.4× faster than PyTorch-MPS** on bge-small (1.7 ms p50 vs 5.7 ms).
 - **Cross-language Q&A.** Ask in Russian, get Russian answers — implemented as a thin RU↔EN translation wrapper over the English-only pipeline. No reindex required.
 - **Full observability stack.** Prometheus + Grafana for system metrics, LangFuse for LLM tracing — both fully optional and additive.
 
@@ -91,7 +91,7 @@ These are the non-obvious results from running the full eval pipeline. Each is t
 
 5. **Cosine + normalized embeddings is non-negotiable.** Forgetting `normalize_embeddings=True` in `sentence-transformers` silently breaks retrieval quality without obvious errors. The bug doesn't surface until you measure with Ragas.
 
-6. **ONNX on CPU beat PyTorch on MPS — and INT8 didn't fit.** The bge-small embedder is small enough (30M params) that ORT's per-call overhead + graph optimizations dominate over MPS's GPU dispatch overhead: **ONNX-CPU-FP32 single-query latency is 3.2× faster than PyTorch-MPS** (1.7 ms vs 5.5 ms p50), with byte-identical retrieval (cosine parity = 1.0, Ragas Δ ≤ 0.01). The intuition "GPU should always win" is wrong for sub-100M models. Dynamic INT8 went the other way — `context_recall` dropped 0.070 (12.6% relative), well past the 0.05 acceptance budget, and the model got flagged as unusable for retrieval. INT8 noise is invisible on cosine-of-same-text (0.997) but compounds across top-k ranking. Both results are documented honestly in the [Embedder ONNX optimization section](#embedder-onnx-optimization) — the negative INT8 result is as informative as the FP32 win.
+6. **ONNX on CPU beat PyTorch on MPS — and INT8 didn't fit.** The bge-small embedder is small enough (30M params) that ORT's per-call overhead + graph optimizations dominate over MPS's GPU dispatch overhead: **ONNX-CPU-FP32 single-query latency is 3.4× faster than PyTorch-MPS** (1.7 ms vs 5.7 ms p50), with byte-identical retrieval (cosine parity = 1.0, Ragas Δ ≤ 0.01). The intuition "GPU should always win" is wrong for sub-100M models. Dynamic INT8 went the other way — `context_recall` dropped 0.070 (12.6% relative), well past the 0.05 acceptance budget, and the model got flagged as unusable for retrieval. INT8 noise is invisible on cosine-of-same-text (0.997) but compounds across top-k ranking. Both results are documented honestly in the [Embedder ONNX optimization section](#embedder-onnx-optimization) — the negative INT8 result is as informative as the FP32 win.
 
 ## Quick Start
 
@@ -529,7 +529,7 @@ Each ONNX backend is graded by Ragas against the same 25-question golden dataset
 | context_precision | 0.598 | 0.598 | ≈0 | 0.589 | −0.009 |
 | context_recall | 0.557 | 0.557 | ≈0 | **0.487** | **−0.070** |
 
-**ONNX FP32 — PASS.** Every delta within ±0.01; retrieval-metrics byte-identical to PyTorch (direct consequence of cosine 1.0 parity); generation-metrics within LLM-as-judge noise. Combined with the 3.2× single-query latency win above, ONNX FP32 is a strict improvement over PyTorch-MPS on `/ask`. Switching the API to `EMBEDDER_BACKEND=onnx-fp32` is a no-quality-cost upgrade.
+**ONNX FP32 — PASS.** Every delta within ±0.01; retrieval-metrics byte-identical to PyTorch (direct consequence of cosine 1.0 parity); generation-metrics within LLM-as-judge noise. Combined with the 3.4× single-query latency win above, ONNX FP32 is a strict improvement over PyTorch-MPS on `/ask`. Switching the API to `EMBEDDER_BACKEND=onnx-fp32` is a no-quality-cost upgrade.
 
 **ONNX INT8 — FAIL.** `context_recall` dropped 0.070, exceeding the 0.05 budget. The 0.997 mean cosine vs FP32 turns into top-5 reshuffling that drops borderline-relevant chunks: precision stays fine (graded chunks are still relevant), but coverage is not. **INT8 is documented as unusable for production embedding on this model** and kept only as a benchmark artifact in `docsrag_int8`. This is a small-model-specific failure mode — bge-small is ~30M params, where dynamic INT8 noise has nowhere to hide. Larger encoders (`bge-base` 110M, `bge-large` 335M) typically tolerate INT8 much better; if switching the embedder model upwards in the future, re-run the quantization + Ragas gate before drawing a verdict for that model.
 
@@ -578,7 +578,7 @@ What I'd do differently if this were a real production system:
 
 **Observability**  
 - Self-hosted LangFuse instead of cloud free tier, integrated with org SSO.
-- Alert rules in Prometheus on `rag_generation_duration_seconds` p99, on Qdrant unavailability, on `rag_requests_total{status="error"}` rate.
+- Alert rules in Prometheus on `rag_generation_duration_seconds` p99, on Qdrant unavailability, and on error rate (would require first adding a `status` label to `rag_requests_total` — currently only labelled by `endpoint`).
 - Cost tracking — log token counts and compute per-request inference cost into Grafana.
 
 **Security**  
@@ -653,7 +653,7 @@ docsrag/
 │   ├── export_onnx.py        # bge → ONNX FP32 via optimum-cli
 │   ├── quantize_onnx.py      # FP32 → INT8 (dynamic, per-channel)
 │   └── export_torchscript.py # bge backbone → TorchScript .pt (bench-only artifact)
-├── models/           # ONNX-exported models (gitignored, ~160 MB total)
+├── models/           # ONNX + TorchScript artifacts (gitignored, ≈289 MB total: ONNX FP32 128 MB + ONNX INT8 33 MB + TorchScript .pt 128 MB)
 ├── observability/    # Prometheus, Grafana, LangFuse
 ├── benchmarks/
 │   ├── bench_backends.py  # Ollama vs vllm-metal
@@ -683,7 +683,7 @@ make build         # Build API Docker image
 make health        # GET /health
 make ask Q="..."   # POST /ask
 make warmup        # Load LLM into Ollama RAM (run after make up)
-make reindex                                      # Recreate the active collection (CHUNK_SIZE=1024 OVERLAP=100 defaults; honours EMBEDDER_BACKEND)
+make reindex                                      # Recreate the active collection (CHUNK_SIZE=1024 CHUNK_OVERLAP=100 defaults; honours EMBEDDER_BACKEND)
 make reindex CHUNK_SIZE=512 CHUNK_OVERLAP=50      # Override chunk params
 make reindex-onnx                                 # Recreate docsrag with EMBEDDER_BACKEND=onnx-fp32
 make reindex-int8                                 # Recreate docsrag_int8 with EMBEDDER_BACKEND=onnx-int8
@@ -698,8 +698,6 @@ make export-onnx      # bge-small → models/bge-small-en-v1.5-onnx-fp32/ (FORCE
 make quantize-onnx    # FP32 → INT8 dynamic per-channel → models/bge-small-en-v1.5-onnx-int8/
 make bench-embedder   # Latency + throughput across PyTorch-MPS/CPU + ONNX-CPU FP32/INT8 (+ TorchScript-CPU if exported)
 make export-torchscript # Trace bge backbone to TorchScript .pt — bench-only artifact
-make lint          # ruff
-make format        # ruff --fix + black
-make type-check    # mypy
+make format        # pre-commit run -a (ruff-format + ruff-check --fix + mypy)
 make test          # pytest
 ```
