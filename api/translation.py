@@ -1,17 +1,7 @@
-"""Cross-language routing for the RAG pipeline.
+"""RU↔EN translation for the RAG pipeline.
 
-The corpus and embeddings are English-only (`BAAI/bge-small-en-v1.5`), so a
-Russian query goes through retrieval as garbage. To support Russian users
-without reindexing on a multilingual model, we:
-
-  1. Detect Cyrillic in the user's question.
-  2. If present, translate RU → EN, run RAG, then translate the EN answer
-     back to RU.
-  3. If absent, pass through unchanged — English path is the default and
-     pays zero translation cost.
-
-Translation uses the same LLM as the main pipeline (Qwen 2.5 is multilingual)
-to avoid pulling in a separate translation model.
+The corpus is English-only, so Russian questions are translated before retrieval
+and answers are translated back. English questions bypass this entirely.
 """
 
 from __future__ import annotations

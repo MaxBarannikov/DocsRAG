@@ -42,23 +42,21 @@ MIN_RELEVANT_CHUNKS = 2  # minimum chunks that must pass grading to skip retry
 
 
 class GraphState(TypedDict):
-    question: str  # original user question — never mutated
-    query: str  # current retrieval query (rewritten on retry)
+    question: str
+    query: str
     top_k: int
-    hits: list  # list[RetrievalHit] from retriever
-    relevant_hits: list  # list[RetrievalHit] that passed grading
+    hits: list
+    relevant_hits: list
     answer: str
-    sources: list  # list[Source]
-    retry_count: int  # incremented by relevance_grader each pass
-    timings: dict  # rewrite_ms, retrieval_ms, grading_ms, generation_ms, total_ms
-    callbacks: list  # LangFuse CallbackHandler list, empty when tracing disabled
+    sources: list
+    retry_count: int
+    timings: dict
+    callbacks: list
 
 
 def build_agent_graph(pipeline: RAGPipeline) -> CompiledStateGraph:  # noqa: C901, PLR0915
-    # LangGraph builder: 4 closure-capturing node fns inflate the statement count;
-    # extracting them only moves closures up a level without simplifying the flow.
     llm = make_llm(temperature=0.0)
-    # Separate grader LLM with json_mode=True so Qwen reliably outputs structured verdicts.
+    # json_mode=True: Qwen at temperature=0 otherwise returns plain text for grading verdicts.
     grader_llm = make_llm(temperature=0.0, json_mode=True)
 
     def query_rewriter(state: GraphState) -> dict[str, Any]:
@@ -144,7 +142,6 @@ def build_agent_graph(pipeline: RAGPipeline) -> CompiledStateGraph:  # noqa: C90
 
     def generator(state: GraphState) -> dict[str, Any]:
         question = state["question"]
-        # Fall back to all hits if grading produced nothing relevant.
         hits_for_gen = state.get("relevant_hits") or state["hits"]
 
         callbacks = state.get("callbacks") or []
@@ -168,7 +165,7 @@ def build_agent_graph(pipeline: RAGPipeline) -> CompiledStateGraph:  # noqa: C90
     def should_retry(state: GraphState) -> str:
         relevant = state.get("relevant_hits", [])
         retry_count = state.get("retry_count", 0)
-        # retry_count was already incremented by relevance_grader, so compare with <=.
+        # retry_count is already incremented by relevance_grader before this is called.
         if len(relevant) < MIN_RELEVANT_CHUNKS and retry_count <= MAX_RETRIES:
             logger.info(
                 "should_retry → retry (relevant={} < {}, retry_count={} ≤ {})",
@@ -200,11 +197,6 @@ def build_agent_graph(pipeline: RAGPipeline) -> CompiledStateGraph:  # noqa: C90
 
 
 class AgentPipeline:
-    """Wraps the compiled LangGraph agent with the same ask() interface as RAGPipeline.
-
-    Allows the eval harness and the /agent/ask endpoint to treat it identically
-    to RAGPipeline without special-casing.
-    """
 
     def __init__(self, pipeline: RAGPipeline) -> None:
         self._pipeline = pipeline
@@ -218,7 +210,6 @@ class AgentPipeline:
         include_contexts: bool,
         rerank_top_n: int = 20,  # noqa: ARG002 — interface parity with RAGPipeline.ask
     ) -> tuple[str, list[Source], dict[str, int]]:
-        # Lazy imports: translation pulls api.llm (circular), tracing is optional.
         from api.tracing import get_langfuse_handler  # noqa: PLC0415
         from api.translation import (  # noqa: PLC0415
             contains_cyrillic,
@@ -267,8 +258,7 @@ class AgentPipeline:
         final_hits = result.get("relevant_hits") or result.get("hits", [])
         sources = [self._pipeline._hit_to_source(h, include_contexts=include_contexts) for h in final_hits]
 
-        # Graph's own total_ms only covers in-graph stages; recompute end-to-end
-        # so translation is included when the question was Russian.
+        # Recompute total_ms end-to-end so translation latency is included.
         total_ms = int((time.perf_counter() - t_start) * 1000)
         timings: dict[str, int] = {
             "retrieval_ms": result["timings"].get("retrieval_ms", 0),
@@ -296,7 +286,6 @@ class AgentPipeline:
 
 @lru_cache(maxsize=1)
 def get_agent_pipeline() -> AgentPipeline:
-    """Application-wide singleton for the agentic pipeline."""
-    from api.rag import get_pipeline  # noqa: PLC0415 — circular dep: api.rag imports types from api.graph context
+    from api.rag import get_pipeline  # noqa: PLC0415 — circular: api.rag → api.graph → api.rag
 
     return AgentPipeline(get_pipeline())

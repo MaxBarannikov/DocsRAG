@@ -1,8 +1,4 @@
-"""Markdown document loader.
-
-Recursively reads Markdown files from a source directory and produces
-a list of RawDocument objects with path metadata.
-"""
+"""Markdown document loader."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,17 +16,6 @@ class RawDocument:
 
 
 def load_markdown_files(docs_root: Path) -> list[RawDocument]:
-    """Load all .md files recursively from `docs_root`.
-
-    Args:
-        docs_root: Directory containing markdown documentation.
-
-    Returns:
-        List of RawDocument objects, one per .md file.
-
-    Raises:
-        FileNotFoundError: If `docs_root` does not exist.
-    """
     if not docs_root.exists():
         raise FileNotFoundError(
             f"Docs root does not exist: {docs_root}. Run ./indexing/fetch_docs.sh to download documentation."

@@ -1,5 +1,3 @@
-"""RAG pipeline: retrieve relevant chunks from Qdrant, generate an answer with Ollama."""
-
 from __future__ import annotations
 
 import time
@@ -48,32 +46,20 @@ def _scored_point_to_hit(point: ScoredPoint) -> RetrievalHit:
 
 
 class RAGPipeline:
-    """End-to-end retrieve → generate pipeline.
-
-    Heavy resources (embedder, Qdrant client, LLM client) are constructed
-    once and reused across requests. See `get_pipeline()` for the cached
-    application-wide instance.
-    """
 
     def __init__(self, retrieval_strategy: RetrievalStrategy = "dense") -> None:
         logger.info("Initializing RAGPipeline (strategy={})", retrieval_strategy)
         self._strategy = retrieval_strategy
 
-        # Embedder: same backend used during indexing — guarantees identical
-        # vector space and pooling/normalization between index- and query-time.
-        # Backend is picked by EMBEDDER_BACKEND env var (see embeddings.factory).
         self._embedder = make_embedder()
 
-        # Qdrant: direct client — bypasses langchain-qdrant metadata handling
-        # which changed in 0.2.x. Our payload is flat: text, source_path,
-        # header_path, chunk_index — we map it to Document ourselves.
+        # Direct Qdrant client — langchain-qdrant 0.2.x broke flat payload→metadata
+        # mapping, so we map text/source_path/header_path/chunk_index ourselves.
         self._qdrant_client = QdrantClient(url=settings.qdrant_url)
 
         self._llm = make_llm(temperature=0.0)
         self._chain = PROMPT | self._llm | StrOutputParser()
 
-        # Hybrid retriever is built lazily on first use to avoid loading
-        # BM25 index and reranker when strategy is "dense".
         self._hybrid_retriever = None
         if retrieval_strategy in ("hybrid", "hybrid_rerank"):
             self._hybrid_retriever = self._build_hybrid_retriever(retrieval_strategy)
@@ -88,7 +74,6 @@ class RAGPipeline:
         )
 
     def _build_hybrid_retriever(self, strategy: RetrievalStrategy) -> HybridRetriever:
-        # Lazy import: avoid loading BM25 / cross-encoder when strategy is "dense".
         from api.retriever import HybridRetriever, load_or_build_bm25, load_reranker  # noqa: PLC0415
 
         bm25_index = load_or_build_bm25(self._qdrant_client)
@@ -139,9 +124,6 @@ class RAGPipeline:
         include_contexts: bool,
         rerank_top_n: int = 20,
     ) -> tuple[str, list[Source], dict[str, int]]:
-        """Full pipeline: optionally translate RU→EN → retrieve → generate → optionally translate EN→RU."""
-        # Lazy imports below break a circular dep (translation pulls api.llm) and
-        # keep optional tracing out of the hot path when LangFuse keys are unset.
         from api.tracing import get_langfuse_handler  # noqa: PLC0415
         from api.translation import (  # noqa: PLC0415
             contains_cyrillic,
@@ -230,5 +212,4 @@ class RAGPipeline:
 
 @lru_cache(maxsize=1)
 def get_pipeline() -> RAGPipeline:
-    """Application-wide singleton. Lazily constructed on first call."""
     return RAGPipeline()

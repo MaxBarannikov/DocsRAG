@@ -1,22 +1,13 @@
 """Quantize an ONNX FP32 model to INT8 (dynamic).
 
-Wraps `optimum.onnxruntime.ORTQuantizer` with the standard preset:
-    - Dynamic: weights quantized to INT8 offline, activations on-the-fly per inference.
-      No calibration set needed — simplest path. If retrieval quality drops too
-      much, the fallback is static quantization with a calibration corpus
-      (CLAUDE.md Task 9 step 6).
-    - avx512_vnni preset: optimal on modern Intel CPUs; on ARM / Apple Silicon
-      it falls back to portable INT8 kernels without VNNI instructions.
-    - per_channel=True: own zero-point + scale per channel. Default after A/B
-      on 120 real chunks (Task 9 step 6): per_tensor gave mean cosine 0.9759
-      vs FP32 (75% below 0.98), per_channel gave 0.9973 (1.7% below 0.99).
-      Size cost: +0.2 MB on 32 MB total — overwhelming win. The --per-tensor
-      flag is kept for reproducibility of the alt variant.
+Uses ORTQuantizer with avx512_vnni preset and per_channel=True by default.
+Per-channel gives mean cosine 0.9973 vs FP32; per-tensor gives 0.9759 — use
+--per-tensor only to reproduce the alt variant.
 
 Input:  models/<name>-onnx-fp32/   (from scripts/export_onnx.py)
 Output: models/<name>-onnx-int8/   (tokenizer files copied from input)
 
-Idempotent: skips if {output}/model.onnx already exists, unless --force.
+Idempotent: skips if output/model.onnx already exists, unless --force.
 
 Usage:
     python scripts/quantize_onnx.py
@@ -33,8 +24,6 @@ from pathlib import Path
 
 DEFAULT_INPUT = Path("models/bge-small-en-v1.5-onnx-fp32")
 
-# Tokenizer / config files that ORTQuantizer doesn't carry over by default.
-# We copy them so OnnxEmbedder can load the quantized dir with AutoTokenizer.
 TOKENIZER_FILES = (
     "tokenizer.json",
     "tokenizer_config.json",

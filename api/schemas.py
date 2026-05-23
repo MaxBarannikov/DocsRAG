@@ -1,13 +1,9 @@
-"""Pydantic schemas for the RAG API contract."""
-
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
 
 class Source(BaseModel):
-    """A single source chunk used to answer the question."""
-
     source_path: str = Field(
         ...,
         description="Relative path to the source markdown file",
@@ -62,8 +58,6 @@ class AskResponse(BaseModel):
 
 
 class AgentAskResponse(BaseModel):
-    """Agentic RAG answer with per-stage timing breakdown."""
-
     question: str
     answer: str
     sources: list[Source]

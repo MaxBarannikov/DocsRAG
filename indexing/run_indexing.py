@@ -4,12 +4,6 @@ Usage:
     python -m indexing.run_indexing
     python -m indexing.run_indexing --chunk-size 1024 --overlap 100
     python -m indexing.run_indexing --recreate
-
-The pipeline:
-    1. Loads markdown documents from settings.docs_source_path.
-    2. Chunks them with hierarchical (header + char) splitting.
-    3. Encodes chunks with the embedding model.
-    4. Upserts chunks + embeddings into Qdrant.
 """
 
 import argparse
@@ -50,10 +44,6 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Drop and recreate the collection before indexing.",
     )
-    # Embedder is selected via EMBEDDER_BACKEND env var; the underlying model
-    # (HF id for pytorch, dir path for onnx) lives in api/config.py settings.
-    # No --embedding-model CLI flag: it would have backend-dependent semantics
-    # and only the pytorch path historically used it.
     return p.parse_args()
 
 
@@ -72,13 +62,11 @@ def main() -> int:
     logger.info(f"Recreate:         {args.recreate}")
     logger.info("=" * 60)
 
-    # 1. Load
     documents = load_markdown_files(settings.docs_source_path)
     if not documents:
         logger.error("No documents loaded — aborting.")
         return 1
 
-    # 2. Chunk
     chunks = chunk_documents(
         documents,
         chunk_size=args.chunk_size,
@@ -88,13 +76,11 @@ def main() -> int:
         logger.error("No chunks produced — aborting.")
         return 1
 
-    # 3. Embed
     embedder = make_embedder()
     texts = [c.text for c in chunks]
     logger.info(f"Encoding {len(texts)} chunks...")
     embeddings = embedder.encode(texts, show_progress=True)
 
-    # 4. Store
     store = QdrantStore(
         url=settings.qdrant_url,
         collection_name=args.collection,
@@ -108,7 +94,6 @@ def main() -> int:
 
     store.upsert_chunks(chunks, embeddings)
 
-    # Summary
     elapsed = time.perf_counter() - started
     final_count = store.count()
     logger.info("=" * 60)

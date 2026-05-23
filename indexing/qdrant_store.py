@@ -1,5 +1,3 @@
-"""Qdrant collection management and chunk upserting."""
-
 import uuid
 from collections.abc import Sequence
 
@@ -11,7 +9,6 @@ from indexing.chunker import Chunk
 
 
 class QdrantStore:
-    """Manages a Qdrant collection for chunk storage and retrieval."""
 
     def __init__(
         self,
@@ -44,13 +41,6 @@ class QdrantStore:
         embeddings: Sequence[Sequence[float]],
         batch_size: int = 100,
     ) -> None:
-        """Upsert chunks with their embeddings into Qdrant.
-
-        Args:
-            chunks: Chunks to insert.
-            embeddings: Parallel list of embedding vectors.
-            batch_size: Number of points per upsert request.
-        """
         if len(chunks) != len(embeddings):
             raise ValueError(f"chunks ({len(chunks)}) and embeddings ({len(embeddings)}) length mismatch")
 
@@ -76,5 +66,4 @@ class QdrantStore:
         logger.info(f"Upserted {len(points)} chunks into '{self.collection_name}'")
 
     def count(self) -> int:
-        """Return number of points in the collection."""
         return self.client.count(self.collection_name).count

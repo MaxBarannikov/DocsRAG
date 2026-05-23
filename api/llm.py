@@ -1,5 +1,3 @@
-"""LLM factory — returns ChatOllama or ChatOpenAI depending on INFERENCE_BACKEND."""
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -9,23 +7,13 @@ from api.config import settings
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
-# Explicit cap shared by both backends — vllm-metal can truncate long answers
-# while Ollama defaults to unlimited (num_predict=-1).
+# Explicit cap: vllm-metal can truncate long answers; Ollama defaults to unlimited (num_predict=-1).
 MAX_TOKENS = 1024
 
 
 def make_llm(temperature: float = 0.0, *, json_mode: bool = False) -> BaseChatModel:
-    """Return the configured LLM backend.
-
-    ollama → ChatOllama; vllm → ChatOpenAI pointing at the vllm/vllm-metal endpoint
-    (api_key="EMPTY" is required by langchain but ignored by vLLM).
-
-    temperature=0.0 by default for deterministic, reproducible eval.
-    frequency_penalty=0.3 (vllm) guards against Qwen 2.5 degenerate loops at temperature=0;
-    Ollama applies repeat_penalty=1.1 by default for the same reason.
-    """
     if settings.inference_backend == "vllm":
-        from langchain_openai import ChatOpenAI  # noqa: PLC0415 — lazy: only load vllm path when selected
+        from langchain_openai import ChatOpenAI  # noqa: PLC0415
 
         return ChatOpenAI(
             model=settings.vllm_model,
@@ -38,8 +26,7 @@ def make_llm(temperature: float = 0.0, *, json_mode: bool = False) -> BaseChatMo
             model_kwargs={"response_format": {"type": "json_object"}} if json_mode else {},
         )
 
-    # Ollama backend (default).
-    from langchain_ollama import ChatOllama  # noqa: PLC0415 — lazy: only load Ollama path when selected
+    from langchain_ollama import ChatOllama  # noqa: PLC0415
 
     return ChatOllama(
         model=settings.ollama_model,

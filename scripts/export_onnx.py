@@ -1,22 +1,16 @@
 """Export a sentence-transformers model to ONNX FP32.
 
-Wraps `optimum-cli export onnx --task feature-extraction`. For a
-sentence-transformers model the exported graph has TWO outputs:
-    - `token_embeddings`     : [batch, seq_len, hidden_dim] raw transformer output
-    - `sentence_embedding`   : [batch, hidden_dim]          already pooled + L2-normalized
+Wraps `optimum-cli export onnx --task feature-extraction`. The exported graph
+has two outputs: `token_embeddings` (raw) and `sentence_embedding` (pooled +
+L2-normalized). We use the latter — pooling is baked into the graph and
+byte-identical to PyTorch sentence-transformers output.
 
-Our runtime wrapper (embeddings/onnx.py, Task 9 step 4) reads
-`sentence_embedding` directly — pooling and normalization are baked into the
-graph and are byte-identical to PyTorch sentence-transformers. See CLAUDE.md
-"Task 9 plan" architectural decision #4 for why.
-
-Idempotent: if `{output}/model.onnx` already exists, exits 0 without
-re-exporting unless --force is passed.
+Idempotent: exits 0 if model.onnx already exists, unless --force is passed.
 
 Usage:
     python scripts/export_onnx.py
     python scripts/export_onnx.py --model BAAI/bge-base-en-v1.5
-    python scripts/export_onnx.py --force          # re-export even if model.onnx exists
+    python scripts/export_onnx.py --force
     python scripts/export_onnx.py --output models/custom/
 """
 
@@ -43,7 +37,7 @@ def _check_onnx_extra_installed() -> None:
 
 
 def _default_output_dir(model_name: str) -> Path:
-    """BAAI/bge-small-en-v1.5 → models/bge-small-en-v1.5-onnx-fp32/."""
+    """BAAI/bge-small-en-v1.5 → models/bge-small-en-v1.5-onnx-fp32."""
     basename = model_name.rsplit("/", 1)[-1]
     return Path("models") / f"{basename}-onnx-fp32"
 

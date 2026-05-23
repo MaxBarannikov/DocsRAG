@@ -1,8 +1,4 @@
-"""Embedder factory — pick a backend by `EMBEDDER_BACKEND` env var.
-
-`OnnxEmbedder` is imported lazily so callers using only the PyTorch backend
-don't need the optional `[onnx]` extra installed.
-"""
+"""Embedder factory — selects backend by EMBEDDER_BACKEND env var."""
 
 from __future__ import annotations
 
@@ -18,14 +14,6 @@ if TYPE_CHECKING:
 
 
 def make_embedder(backend: EmbedderBackend | None = None) -> PytorchEmbedder | OnnxEmbedder:
-    """Build an embedder for the given backend (defaults to `settings.embedder_backend`).
-
-    The returned object exposes the shared API surface used by `api/rag.py`,
-    `api/retriever.py`, and `indexing/run_indexing.py`:
-        - `encode(texts, batch_size=..., show_progress=..., prefix="") -> list[list[float]]`
-        - `dimension: int`
-        - `model_name: str`
-    """
     backend = backend or settings.embedder_backend
     logger.info(f"make_embedder | backend={backend}")
 

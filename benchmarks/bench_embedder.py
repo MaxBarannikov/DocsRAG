@@ -1,24 +1,12 @@
-"""Embedder backend benchmark — latency + throughput across 4 backends.
+"""Embedder backend benchmark — single-query latency (p50/p95/p99) and throughput (vec/s).
 
-Backends:
-    - PyTorch-MPS       : sentence-transformers, Apple Silicon Metal (production default)
-    - PyTorch-CPU       : same library, CPU device — isolates the MPS contribution
-    - ONNX-CPU-FP32     : ONNX Runtime, CPUExecutionProvider, FP32 graph
-    - ONNX-CPU-INT8     : ONNX Runtime, CPUExecutionProvider, dynamic per-channel INT8
-
-Reports per backend:
-    - Single-query latency: p50 / p95 / p99 over N runs (default 50)
-    - Throughput (vectors/sec) at batch sizes 1, 8, 32, 128
-
-The bench loads real chunks from the FastAPI docs corpus so throughput numbers
-reflect production-like text length distribution.
+Backends: PyTorch-MPS, PyTorch-CPU, ONNX-CPU-FP32, ONNX-CPU-INT8, TorchScript-CPU (if exported).
+Uses real FastAPI docs chunks for production-like text length distribution.
 
 Usage:
     uv run python benchmarks/bench_embedder.py
     uv run python benchmarks/bench_embedder.py --single-runs 100
-    uv run python benchmarks/bench_embedder.py --skip-onnx   # if [onnx] not installed
-
-Requires the [onnx] extra unless --skip-onnx is passed.
+    uv run python benchmarks/bench_embedder.py --skip-onnx
 """
 
 from __future__ import annotations
@@ -84,12 +72,10 @@ def measure_throughput(encode_fn, batch: list[str], runs: int) -> float:
 
 
 def _make_torchscript_encode_fn(model_path: Path, tokenizer_name: str, device: str = "cpu"):
-    """Build an encode_fn around a traced TorchScript backbone (Task 9 step 11).
+    """Build an encode_fn around a traced TorchScript backbone.
 
-    No production wrapper class — keeps TorchScript bench-only per the plan.
-    Mirrors the manual-pooling path: traced backbone returns last_hidden_state,
-    we mean-pool with the attention mask, then L2-normalize. Output shape and
-    semantics match OnnxEmbedder / PytorchEmbedder.
+    Traced backbone returns last_hidden_state; we mean-pool + L2-normalize
+    to match OnnxEmbedder / PytorchEmbedder output semantics.
     """
     import torch
     from transformers import AutoTokenizer
@@ -184,9 +170,6 @@ def main() -> int:
             batch_texts,
         )
 
-    # TorchScript-CPU (Task 9 step 11 bonus) — only if the .pt file exists.
-    # No production wrapper: the encode_fn is built inline here. Skipped silently
-    # if `scripts/export_torchscript.py` hasn't been run.
     torchscript_path = Path("models/bge-small-en-v1.5.pt")
     if torchscript_path.exists():
         encode_fn = _make_torchscript_encode_fn(torchscript_path, "BAAI/bge-small-en-v1.5", device="cpu")
@@ -197,7 +180,6 @@ def main() -> int:
             batch_texts,
         )
 
-    # Summary tables — pre-formatted for direct paste into CLAUDE.md README.
     print("\n" + "=" * 78)
     print("Summary: single-query latency (ms)")
     print("=" * 78)

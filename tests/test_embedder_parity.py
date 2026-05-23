@@ -1,17 +1,10 @@
-"""Parity gate: PyTorch and ONNX embedders must produce nearly-identical vectors.
+"""Parity gate: PyTorch and ONNX-FP32 embedders must produce nearly-identical vectors.
 
-Task 9 step 5: validates the entire ONNX export + runtime pipeline against the
-PyTorch reference. Hard fail if any chunk's cosine similarity is below the
-threshold — that's the signal that something drifted (trace artifacts, graph
-optimizations, provider-specific numerical paths).
+Hard fails if any chunk cosine similarity falls below threshold — that indicates a
+drift in pooling, normalization, or provider-specific numerical paths.
 
-Falls back to skipping (not failing) when:
-    - The [onnx] extra is not installed (pytest.importorskip below).
-    - The FastAPI docs corpus isn't present locally (e.g. fresh CI checkout).
-    - Either embedder model file is missing (e.g. ONNX hasn't been exported yet).
-
-If this test ever genuinely fails (cosine < threshold), see CLAUDE.md decision
-#4 — fallback is to read `token_embeddings` and pool manually.
+Skipped (not failed) when the [onnx] extra, the docs corpus, or the exported
+model file are missing.
 """
 
 from __future__ import annotations
@@ -21,9 +14,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-# Module-level skip if [onnx] extra is missing. Both imports are pulled in by
-# the OnnxEmbedder's module-load — checking here yields a clean skip message
-# instead of an ImportError on collection.
 pytest.importorskip("onnxruntime")
 pytest.importorskip("transformers")
 
@@ -34,7 +24,7 @@ from indexing.chunker import chunk_documents  # noqa: E402
 from indexing.loader import load_markdown_files  # noqa: E402
 
 PARITY_THRESHOLD = 0.9999
-NUM_CHUNKS = 120  # ~5% of the 2540-chunk corpus — meaningful sample, fast to run
+NUM_CHUNKS = 120
 ONNX_MODEL_DIR = Path("models/bge-small-en-v1.5-onnx-fp32")
 
 
@@ -70,21 +60,18 @@ def test_pytorch_onnx_parity(
     pytorch_embedder: PytorchEmbedder,
     onnx_embedder: OnnxEmbedder,
 ) -> None:
-    # float64 for the cosine math — both embedders return float32, accumulating
-    # error matters when comparing two unit vectors at 4-9s precision.
+    # float64: accumulation error matters when comparing unit vectors at 4–9 decimal places.
     pt_vecs = np.array(pytorch_embedder.encode(chunks, show_progress=False), dtype=np.float64)
     onnx_vecs = np.array(onnx_embedder.encode(chunks, show_progress=False), dtype=np.float64)
 
     assert pt_vecs.shape == onnx_vecs.shape == (NUM_CHUNKS, pytorch_embedder.dimension)
 
-    # Sanity: both should already be L2-normalized (graph- or library-baked).
     pt_norms = np.linalg.norm(pt_vecs, axis=1)
     onnx_norms = np.linalg.norm(onnx_vecs, axis=1)
     assert np.allclose(pt_norms, 1.0, atol=1e-4), f"PyTorch norms off: min={pt_norms.min()}, max={pt_norms.max()}"
     assert np.allclose(onnx_norms, 1.0, atol=1e-4), f"ONNX norms off: min={onnx_norms.min()}, max={onnx_norms.max()}"
 
-    # Cosine = dot product for unit vectors.
-    cosines = (pt_vecs * onnx_vecs).sum(axis=1)
+    cosines = (pt_vecs * onnx_vecs).sum(axis=1)  # cosine = dot product for unit vectors
 
     below = np.where(cosines < PARITY_THRESHOLD)[0]
     if below.size > 0:

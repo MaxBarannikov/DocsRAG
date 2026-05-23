@@ -1,5 +1,3 @@
-"""Prometheus custom metrics for the RAG API."""
-
 from prometheus_client import Counter, Histogram
 
 rag_requests_total = Counter(

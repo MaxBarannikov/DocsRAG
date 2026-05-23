@@ -1,5 +1,3 @@
-"""FastAPI entrypoint for the DocsRAG API."""
-
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -29,7 +27,7 @@ if TYPE_CHECKING:
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Warm up the RAG pipeline at startup so the first request isn't slow."""
     logger.info("Starting DocsRAG API")
-    get_pipeline()  # constructs and caches the singleton; agent pipeline shares it
+    get_pipeline()
     logger.info("DocsRAG API ready")
     yield
     logger.info("Shutting down DocsRAG API")
@@ -51,11 +49,7 @@ AgentPipelineDep = Annotated[AgentPipeline, Depends(get_agent_pipeline)]
 
 @app.get("/health", response_model=HealthResponse)
 def health(pipeline: PipelineDep) -> HealthResponse:
-    """Liveness + readiness check.
-
-    Touches Qdrant to confirm the collection is reachable and reports
-    configured model names. If Qdrant is down, returns 503.
-    """
+    """Liveness + readiness check. Returns 503 if Qdrant is unreachable."""
     try:
         points = pipeline.collection_points_count()
     except Exception as exc:
@@ -105,7 +99,6 @@ def ask(request: AskRequest, pipeline: PipelineDep) -> AskResponse:
 
 @app.post("/agent/ask", response_model=AgentAskResponse)
 def agent_ask(request: AskRequest, agent: AgentPipelineDep) -> AgentAskResponse:
-    """Answer a question using the agentic RAG graph (query rewriting + relevance grading)."""
     try:
         answer, sources, timings = agent.ask(
             question=request.question,

@@ -24,7 +24,6 @@ for _var in ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY
 
 from langchain_ollama import ChatOllama, OllamaEmbeddings  # noqa: E402
 
-# Make project root importable when run as a script
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api.config import settings  # noqa: E402
@@ -117,7 +116,7 @@ def compute_metrics(
 ) -> dict[str, float]:
     dataset = EvaluationDataset(samples=ragas_samples)
 
-    # In ragas 0.2.x metrics are module-level singletons — set llm/embeddings in place.
+    # ragas 0.2.x: metrics are module-level singletons, configure in place.
     faithfulness.llm = ragas_llm
     answer_relevancy.llm = ragas_llm
     answer_relevancy.embeddings = ragas_embeddings
@@ -125,7 +124,7 @@ def compute_metrics(
     context_recall.llm = ragas_llm
     metrics = [faithfulness, answer_relevancy, context_precision, context_recall]
 
-    # timeout=180s и max_workers=1 — Ollama однопоточный, параллелизм только мешает
+    # max_workers=1: Ollama is single-threaded; parallelism only causes timeouts.
     run_config = RunConfig(timeout=180, max_retries=3, max_workers=1)
 
     logger.info("Running Ragas evaluation on {} samples...", len(ragas_samples))
@@ -189,10 +188,6 @@ def main() -> None:
 
     logger.info("Config: {}", config)
 
-    # If config pins an embedder backend, override settings BEFORE building the
-    # pipeline. make_embedder() reads settings.embedder_backend at call time
-    # (inside RAGPipeline.__init__), so the override propagates cleanly even
-    # though settings was imported at module load.
     if "embedder_backend" in config:
         settings.embedder_backend = config["embedder_backend"]
         logger.info(

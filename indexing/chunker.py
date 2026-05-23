@@ -1,13 +1,4 @@
-"""Document chunking.
-
-Strategy: hierarchical chunking with two passes:
-  1. Split by Markdown headers (preserves semantic structure).
-  2. Recursively split oversized sections by character count.
-
-This is better than naive RecursiveCharacterTextSplitter alone because
-it keeps section context (header path) in metadata, which is invaluable
-for retrieval relevance and for citing sources to the user.
-"""
+"""Document chunking — two-pass: split by Markdown headers, then by character count."""
 
 from dataclasses import dataclass
 
@@ -27,8 +18,6 @@ class Chunk:
     chunk_index: int  # 0-based index of this chunk within the source document
 
 
-# Markdown headers we split on. We keep all 4 levels because FastAPI docs
-# use deep nesting in tutorials.
 _HEADERS_TO_SPLIT_ON = [
     ("#", "h1"),
     ("##", "h2"),
@@ -42,18 +31,6 @@ def chunk_documents(
     chunk_size: int = 512,
     chunk_overlap: int = 50,
 ) -> list[Chunk]:
-    """Split documents into chunks suitable for embedding.
-
-    Args:
-        documents: Raw markdown documents.
-        chunk_size: Target chunk size in characters (not tokens).
-                    With BGE-small, 512 chars is roughly 100-150 tokens — well under
-                    the 512-token model limit, leaving room for prefix instructions.
-        chunk_overlap: Characters of overlap between consecutive chunks.
-
-    Returns:
-        Flat list of chunks across all documents.
-    """
     header_splitter = MarkdownHeaderTextSplitter(
         headers_to_split_on=_HEADERS_TO_SPLIT_ON,
         strip_headers=False,  # keep headers in chunk text — helps retrieval
@@ -67,10 +44,8 @@ def chunk_documents(
     all_chunks: list[Chunk] = []
 
     for doc in documents:
-        # Pass 1: split by headers
         header_chunks = header_splitter.split_text(doc.content)
 
-        # Pass 2: split each header chunk if it's too long
         chunk_idx = 0
         for hc in header_chunks:
             header_path = _build_header_path(hc.metadata)

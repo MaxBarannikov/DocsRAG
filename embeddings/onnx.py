@@ -1,13 +1,7 @@
-"""ONNX Runtime embedder.
+"""ONNX Runtime embedder for sentence-transformers models exported via scripts/export_onnx.py.
 
-Uses a sentence-transformers model exported via `scripts/export_onnx.py`.
-Reads the graph-baked `sentence_embedding` output directly — pooling and
-L2 normalization happen inside the ONNX graph (see CLAUDE.md "Task 9 plan"
-architectural decision #4 for why we don't pool manually).
-
-Requires the `[onnx]` extra: `make install-onnx`. Not re-exported from
-`embeddings.__init__` so that `from embeddings import PytorchEmbedder` keeps
-working when the extra isn't installed.
+Reads the graph-baked `sentence_embedding` output (already pooled + L2-normalized),
+so no manual pooling is needed. Requires the [onnx] extra: `make install-onnx`.
 """
 
 from collections.abc import Iterable, Sequence
@@ -23,15 +17,12 @@ SENTENCE_EMBEDDING_OUTPUT = "sentence_embedding"
 
 
 class OnnxEmbedder:
-    """Raw onnxruntime InferenceSession wrapper for sentence-transformers ONNX models."""
-
     def __init__(
         self,
         model_dir: Path | str = DEFAULT_MODEL_DIR,
         provider: str = "CPUExecutionProvider",
     ) -> None:
         self.model_dir = Path(model_dir)
-        # `model_name` mirrors PytorchEmbedder's attribute so callers can log either uniformly.
         self.model_name = self.model_dir.name
         logger.info(f"Loading ONNX embedder from '{self.model_dir}' on provider '{provider}'")
 
@@ -42,8 +33,6 @@ class OnnxEmbedder:
 
         self._tokenizer = AutoTokenizer.from_pretrained(self.model_dir)
 
-        # ORT_SEQUENTIAL graph execution: suitable for low-latency single-query
-        # inference. Switch to ORT_PARALLEL for high-throughput batch jobs.
         sess_options = ort.SessionOptions()
         sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
 
@@ -65,12 +54,7 @@ class OnnxEmbedder:
         logger.info(f"Embedding dimension: {self.dimension}")
 
     def _probe_dimension(self) -> int:
-        """One-token inference to read the runtime output shape.
-
-        The graph output shape is symbolic ('Divsentence_embedding_dim_1'), so
-        static inspection isn't reliable. One-shot probe is bulletproof and
-        fires once per process.
-        """
+        """One-shot inference to read the output shape — the graph shape is symbolic so static inspection fails."""
         encoded = self._tokenizer(
             ["dimension probe"],
             padding=True,
@@ -92,22 +76,8 @@ class OnnxEmbedder:
         *,
         batch_size: int = 32,
         show_progress: bool = True,
-        prefix: str = "",
+        prefix: str = "",  # kept for API parity with PytorchEmbedder; unused for bge
     ) -> list[list[float]]:
-        """Encode texts into dense embedding vectors.
-
-        Args:
-            texts: List of texts to embed.
-            batch_size: Number of texts per ONNX run. Per-batch padding keeps
-                        wasted compute small even when sequence lengths vary.
-            show_progress: Wrap the batch loop with tqdm.
-            prefix: Optional prefix prepended to each text (e.g. "query: " for
-                    e5 models). Unused for bge — kept for API parity with
-                    PytorchEmbedder so the two are swappable.
-
-        Returns:
-            List of embedding vectors (each a list of floats).
-        """
         if not texts:
             return []
 

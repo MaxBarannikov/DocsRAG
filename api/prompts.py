@@ -1,8 +1,3 @@
-"""Prompt templates for the RAG pipeline.
-
-Kept in a separate module to decouple prompt iteration from pipeline code.
-"""
-
 from __future__ import annotations
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -32,11 +27,6 @@ PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
-
-# Translation prompts. Used only when the user's question contains Cyrillic.
-# The corpus and embeddings are English, so we translate RU question → EN for
-# retrieval/generation, then translate the EN answer → RU before returning.
-# See api/translation.py for the routing logic.
 
 TRANSLATE_RU_TO_EN_SYSTEM = """You are a professional translator.
 Translate the user's Russian text to English.

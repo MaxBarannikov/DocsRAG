@@ -26,7 +26,6 @@ QUESTIONS = [
 ]
 
 BACKENDS: list[tuple[str, str, str]] = [
-    # (label, INFERENCE_BACKEND, model name for display)
     ("Ollama (Qwen2.5-7B q4_K_M)", "ollama", "qwen2.5:7b-instruct-q4_K_M"),
     ("vllm-metal (Qwen2.5-7B 4bit MLX)", "vllm", "mlx-community/Qwen2.5-7B-Instruct-4bit"),
 ]
@@ -35,7 +34,6 @@ BACKENDS: list[tuple[str, str, str]] = [
 def run_backend(backend_env: str, questions: list[str]) -> list[dict]:
     os.environ["INFERENCE_BACKEND"] = backend_env
 
-    # Re-import config and pipeline fresh for each backend
     import importlib
     import api.config
     import api.llm
@@ -44,8 +42,6 @@ def run_backend(backend_env: str, questions: list[str]) -> list[dict]:
     importlib.reload(api.config)
     importlib.reload(api.llm)
     importlib.reload(api.rag)
-
-    # Clear lru_cache so get_pipeline() re-creates the pipeline
     api.rag.get_pipeline.cache_clear()
 
     from api.rag import RAGPipeline

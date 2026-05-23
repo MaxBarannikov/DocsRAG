@@ -30,12 +30,7 @@ def _tokenize(text: str) -> list[str]:
 
 
 class BM25Index:
-    """BM25 index over Qdrant collection chunks.
-
-    Built once from all points in the collection. Serialized to disk so warm
-    restarts skip the Qdrant scroll. If the collection changes (reindex), delete
-    data/bm25_index.pkl to force a rebuild.
-    """
+    """BM25 index over all collection chunks. Delete data/bm25_index.pkl after reindexing to force a rebuild."""
 
     def __init__(self, docs: list[Document]) -> None:
         self._docs = docs
@@ -100,13 +95,8 @@ def _rrf_merge(
     dense_hits: list[RetrievalHit],
     bm25_hits: list[tuple[Document, float]],
     top_k: int,
-    k: int = 60,
+    k: int = 60,  # standard RRF constant
 ) -> list[RetrievalHit]:
-    """Reciprocal Rank Fusion over dense and sparse result lists.
-
-    Uses chunk_index as the document identifier for deduplication.
-    k=60 is the standard RRF constant that dampens high-rank advantage.
-    """
     from api.rag import RetrievalHit  # noqa: PLC0415 — circular dep: api.rag imports from api.retriever
 
     scores: dict[int, float] = {}
@@ -128,7 +118,6 @@ def _rrf_merge(
 
 
 class HybridRetriever:
-    """Dense + BM25 retrieval with optional cross-encoder reranking."""
 
     def __init__(
         self,
