@@ -46,8 +46,10 @@ graph LR
 
     subgraph Inference
         API -->|embed query| Emb{Embedder Backend}
-        Emb -->|default| EmbPt[PyTorch MPS/CUDA/CPU<br/>bge-small-en-v1.5]
+        Emb -->|default| EmbPt[PyTorch<br/>MPS/CUDA/CPU]
         Emb -->|optimized| EmbOnnx[ONNX Runtime CPU<br/>FP32 / INT8]
+        EmbPt --> EmbModel[bge-small-en-v1.5]
+        EmbOnnx --> EmbModel
         API -->|vector search| Qdrant[(Qdrant<br/>2540 chunks)]
         API -->|chat completion| LLM{LLM Backend}
         LLM -->|dev| Ollama[Ollama<br/>Qwen 2.5 7B]
@@ -69,7 +71,7 @@ graph LR
     classDef service fill:#d4e8ff,stroke:#3e5a8a
     classDef obs fill:#d5ffe8,stroke:#3e8a5a
     class Qdrant,MLflow storage
-    class API,EmbPt,EmbOnnx,Emb,Ollama,vLLM,LLM service
+    class API,EmbPt,EmbOnnx,EmbModel,Emb,Ollama,vLLM,LLM service
     class Prom,LF,Graf,RunEval obs
 ```
 
