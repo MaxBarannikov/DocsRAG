@@ -144,7 +144,7 @@ make up        # starts Qdrant + API + MLflow + Prometheus + Grafana
 make health    # checks that everything is up
 ```
 
-The first API start takes ~30–60 s — the embedding model (~130 MB) is being downloaded.
+The first API start takes ≈30–60 s — the embedding model (≈130 MB) is being downloaded.
 
 ### Step 5 — Index documents
 
@@ -322,7 +322,7 @@ Response shape is unchanged; `translation_ms` reports the combined RU→EN + EN�
 
 **Backend choice matters for Russian.** On `INFERENCE_BACKEND=vllm` with the default `Qwen2.5-7B-Instruct-4bit` (MLX), the EN→RU step produces garbled Cyrillic — Latin-with-acute artefacts mid-word (e.g. `разdéлвние` instead of `разработки`). Use `Qwen2.5-14B-Instruct-4bit` for clean Russian output (set `VLLM_MODEL` in `.env`). On `INFERENCE_BACKEND=ollama` (default), the GGUF-quantized 7B handles Russian cleanly — no model swap needed. The 4bit MLX quantization of Qwen 2.5 7B has a vocabulary/sampling artefact that the larger 14B model avoids.
 
-**Why translation, not multilingual embeddings?** The index uses `BAAI/bge-small-en-v1.5` (English-only) and was tuned on an English golden dataset (faithfulness 0.882, context_recall 0.557). Swapping to a multilingual embedder (`bge-m3`, `multilingual-e5`) requires a full reindex on a ~2 GB model and would degrade the validated English baseline. Translation is reversible, leaves the index untouched, and reuses the existing multilingual LLM (Qwen 2.5) — at a cost of two extra LLM calls per Russian query (~+1.5 s on Ollama 7B, ~+8 s on vllm-metal 7B, ~+13 s on vllm-metal 14B).
+**Why translation, not multilingual embeddings?** The index uses `BAAI/bge-small-en-v1.5` (English-only) and was tuned on an English golden dataset (faithfulness 0.882, context_recall 0.557). Swapping to a multilingual embedder (`bge-m3`, `multilingual-e5`) requires a full reindex on a ≈2 GB model and would degrade the validated English baseline. Translation is reversible, leaves the index untouched, and reuses the existing multilingual LLM (Qwen 2.5) — at a cost of two extra LLM calls per Russian query (≈+1.5 s on Ollama 7B, ≈+8 s on vllm-metal 7B, ≈+13 s on vllm-metal 14B).
 
 ## Evaluation
 
@@ -483,7 +483,7 @@ Selected via `EMBEDDER_BACKEND` env var. `settings.active_qdrant_collection` rou
 | **ONNX-CPU-FP32** | **1.7 ms** | **1.8 ms** | **1.8 ms** |
 | ONNX-CPU-INT8 | 1.5 ms | 1.6 ms | 1.7 ms |
 
-**Headline:** ONNX-CPU-FP32 is **3.4× faster than PyTorch-MPS** on single-query latency. The intuition "MPS GPU should win for embeddings" doesn't hold for small models — bge-small is 30M params, and the per-call MPS dispatch overhead + Python ↔ Metal boundary cost dominates over the actual matrix math. ONNX Runtime minimizes that overhead and applies graph-level optimizations (operator fusion, constant folding) that pay no GPU-roundtrip cost. TorchScript-CPU gives a modest ~30% win over plain PyTorch-CPU (graph freezing + IR optimizations) but doesn't approach ONNX — TorchScript's IR is shallower than ORT's optimization pipeline. INT8 trims another ~12% on p50 with no longer the tail-variance issue we saw on the earlier run.
+**Headline:** ONNX-CPU-FP32 is **3.4× faster than PyTorch-MPS** on single-query latency. The intuition "MPS GPU should win for embeddings" doesn't hold for small models — bge-small is 30M params, and the per-call MPS dispatch overhead + Python ↔ Metal boundary cost dominates over the actual matrix math. ONNX Runtime minimizes that overhead and applies graph-level optimizations (operator fusion, constant folding) that pay no GPU-roundtrip cost. TorchScript-CPU gives a modest ≈30% win over plain PyTorch-CPU (graph freezing + IR optimizations) but doesn't approach ONNX — TorchScript's IR is shallower than ORT's optimization pipeline. INT8 trims another ≈12% on p50 with no longer the tail-variance issue we saw on the earlier run.
 
 ### Throughput benchmark (vectors/sec)
 
