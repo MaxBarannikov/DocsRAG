@@ -224,10 +224,10 @@ The embedder can run on three swappable backends: `pytorch` (default), `onnx-fp3
 source .venv/bin/activate
 make install-onnx
 
-# 2. Export bge-small to ONNX FP32 (produces models/bge-small-en-v1.5-onnx-fp32/, 127 MB)
+# 2. Export bge-small to ONNX FP32 (produces models/bge-small-en-v1.5-onnx-fp32/, 128 MB)
 make export-onnx
 
-# 3. Quantize FP32 → INT8 dynamic per-channel (produces models/bge-small-en-v1.5-onnx-int8/, 32 MB)
+# 3. Quantize FP32 → INT8 dynamic per-channel (produces models/bge-small-en-v1.5-onnx-int8/, 33 MB)
 make quantize-onnx
 
 # 4. Validate parity vs PyTorch baseline (cosine > 0.9999 expected; actual: 1.000000 across 120 chunks)
@@ -468,8 +468,8 @@ Swappable embedder backend mirroring `make_llm()` pattern: same factory, three r
 | Backend | Model file | Size | Where it reads / writes |
 |---|---|---|---|
 | `pytorch` | HF `BAAI/bge-small-en-v1.5` | ~130 MB | `docsrag` collection |
-| `onnx-fp32` | `models/bge-small-en-v1.5-onnx-fp32/model.onnx` | 127 MB | `docsrag` collection (parity-equivalent to PyTorch) |
-| `onnx-int8` | `models/bge-small-en-v1.5-onnx-int8/model.onnx` | 32 MB | `docsrag_int8` collection (separate — vectors differ) |
+| `onnx-fp32` | `models/bge-small-en-v1.5-onnx-fp32/` | 128 MB (dir, incl. tokenizer) | `docsrag` collection (parity-equivalent to PyTorch) |
+| `onnx-int8` | `models/bge-small-en-v1.5-onnx-int8/` | 33 MB (dir, incl. tokenizer) | `docsrag_int8` collection (separate — vectors differ) |
 
 Selected via `EMBEDDER_BACKEND` env var. `settings.active_qdrant_collection` routes Qdrant queries to the right collection automatically (see `api/config.py`).
 
