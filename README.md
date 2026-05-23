@@ -44,7 +44,8 @@ A production-grade RAG system demonstrating modern MLOps practices:
 |---|---|
 | API | FastAPI + Pydantic |
 | LLM | Qwen 2.5 7B Instruct via Ollama (dev) / vllm-metal MLX (prod) |
-| Embeddings | BAAI/bge-small-en-v1.5 (384-dim, English); swappable backends: PyTorch (MPS/CUDA/CPU), ONNX Runtime FP32, ONNX Runtime INT8 dynamic per-channel |
+| Embeddings | BAAI/bge-small-en-v1.5 (384-dim, English, normalized cosine) |
+| Embedder backend | `pytorch` (MPS/CUDA/CPU) · `onnx-fp32` (3.4× faster, byte-identical retrieval) · `onnx-int8` (benchmark artifact, fails Ragas budget) |
 | Vector DB | Qdrant (cosine similarity) |
 | Orchestration | LangChain + LangGraph |
 | Retrieval | Dense (Qdrant) + Sparse (BM25) + Cross-encoder reranker |
