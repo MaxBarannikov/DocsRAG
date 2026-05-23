@@ -13,22 +13,6 @@ End-to-end production-grade RAG system over FastAPI documentation (153 markdown 
 - **Cross-language Q&A.** Ask in Russian, get Russian answers — implemented as a thin RU↔EN translation wrapper over the English-only pipeline. No reindex required.
 - **Full observability stack.** Prometheus + Grafana for system metrics, LangFuse for LLM tracing — both fully optional and additive.
 
-## Key Findings
-
-These are the non-obvious results from running the full eval pipeline. Each is the kind of thing you only learn by actually building and measuring:
-
-1. **Bigger chunks beat more chunks.** Going from `chunk_size=512, top_k=10` to `chunk_size=1024, top_k=5` gave better metrics on every dimension (faithfulness +0.064, context_precision +0.072) while sending fewer tokens to the LLM. More semantic context per chunk > more chunks.
-
-2. **BM25 hurts on semantically rich corpora.** Hybrid retrieval (dense + BM25 via RRF) underperformed pure dense by **−0.093 faithfulness**. Technical documentation about FastAPI is full of natural-language explanation; keyword overlap from BM25 added more noise than signal. A cross-encoder reranker recovered some quality but still didn't beat dense.
-
-3. **Agentic RAG is a precision/recall trade, not a free win.** A LangGraph agent with relevance grading improved `context_precision` by +0.055 but cut `context_recall` by −0.107 — the binary grader discards borderline-relevant chunks that actually contained answers. Pick agentic when precision matters more than coverage; pick simple RAG otherwise.
-
-4. **vLLM on Apple Silicon is real and fast.** The MLX-based `vllm-metal` server delivers OpenAI-compatible API with **3.8× faster generation** than llama.cpp-based Ollama (891ms vs 3375ms avg) on M4 Max. Same code path works for production CUDA vLLM — swap the image, set `VLLM_BASE_URL`.
-
-5. **Cosine + normalized embeddings is non-negotiable.** Forgetting `normalize_embeddings=True` in `sentence-transformers` silently breaks retrieval quality without obvious errors. The bug doesn't surface until you measure with Ragas.
-
-6. **ONNX on CPU beat PyTorch on MPS — and INT8 didn't fit.** The bge-small embedder is small enough (30M params) that ORT's per-call overhead + graph optimizations dominate over MPS's GPU dispatch overhead: **ONNX-CPU-FP32 single-query latency is 3.2× faster than PyTorch-MPS** (1.7 ms vs 5.5 ms p50), with byte-identical retrieval (cosine parity = 1.0, Ragas Δ ≤ 0.01). The intuition "GPU should always win" is wrong for sub-100M models. Dynamic INT8 went the other way — `context_recall` dropped 0.070 (12.6% relative), well past the 0.05 acceptance budget, and the model got flagged as unusable for retrieval. INT8 noise is invisible on cosine-of-same-text (0.997) but compounds across top-k ranking. Both results are documented honestly in the [Embedder ONNX optimization section](#embedder-onnx-optimization) — the negative INT8 result is as informative as the FP32 win.
-
 ## Goals
 
 A production-grade RAG system demonstrating modern MLOps practices:
@@ -88,6 +72,22 @@ graph LR
 ```
 
 The API is the only stateful service. Qdrant holds chunk embeddings; MLflow holds eval runs. Ollama / vLLM are stateless inference servers swapped via `INFERENCE_BACKEND` env var. Observability is fully additive — the system runs unchanged without LangFuse keys or with Prometheus disabled.
+
+## Key Findings
+
+These are the non-obvious results from running the full eval pipeline. Each is the kind of thing you only learn by actually building and measuring:
+
+1. **Bigger chunks beat more chunks.** Going from `chunk_size=512, top_k=10` to `chunk_size=1024, top_k=5` gave better metrics on every dimension (faithfulness +0.064, context_precision +0.072) while sending fewer tokens to the LLM. More semantic context per chunk > more chunks.
+
+2. **BM25 hurts on semantically rich corpora.** Hybrid retrieval (dense + BM25 via RRF) underperformed pure dense by **−0.093 faithfulness**. Technical documentation about FastAPI is full of natural-language explanation; keyword overlap from BM25 added more noise than signal. A cross-encoder reranker recovered some quality but still didn't beat dense.
+
+3. **Agentic RAG is a precision/recall trade, not a free win.** A LangGraph agent with relevance grading improved `context_precision` by +0.055 but cut `context_recall` by −0.107 — the binary grader discards borderline-relevant chunks that actually contained answers. Pick agentic when precision matters more than coverage; pick simple RAG otherwise.
+
+4. **vLLM on Apple Silicon is real and fast.** The MLX-based `vllm-metal` server delivers OpenAI-compatible API with **3.8× faster generation** than llama.cpp-based Ollama (891ms vs 3375ms avg) on M4 Max. Same code path works for production CUDA vLLM — swap the image, set `VLLM_BASE_URL`.
+
+5. **Cosine + normalized embeddings is non-negotiable.** Forgetting `normalize_embeddings=True` in `sentence-transformers` silently breaks retrieval quality without obvious errors. The bug doesn't surface until you measure with Ragas.
+
+6. **ONNX on CPU beat PyTorch on MPS — and INT8 didn't fit.** The bge-small embedder is small enough (30M params) that ORT's per-call overhead + graph optimizations dominate over MPS's GPU dispatch overhead: **ONNX-CPU-FP32 single-query latency is 3.2× faster than PyTorch-MPS** (1.7 ms vs 5.5 ms p50), with byte-identical retrieval (cosine parity = 1.0, Ragas Δ ≤ 0.01). The intuition "GPU should always win" is wrong for sub-100M models. Dynamic INT8 went the other way — `context_recall` dropped 0.070 (12.6% relative), well past the 0.05 acceptance budget, and the model got flagged as unusable for retrieval. INT8 noise is invisible on cosine-of-same-text (0.997) but compounds across top-k ranking. Both results are documented honestly in the [Embedder ONNX optimization section](#embedder-onnx-optimization) — the negative INT8 result is as informative as the FP32 win.
 
 ## Quick Start
 
