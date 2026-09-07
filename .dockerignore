@@ -1,0 +1,52 @@
+# Version control
+.git/
+.gitignore
+
+# Secrets — never allow these into a build layer
+.env
+.env.*
+!.env.example
+
+# Local environments and build artifacts
+.venv/
+venv/
+*.egg-info/
+__pycache__/
+*.py[cod]
+
+# Large local data the image does not need
+data/
+models/
+mlruns/
+qdrant_storage/
+img/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Not needed at runtime.
+# NB: README.md is deliberately NOT excluded — pyproject.toml declares
+# `readme = "README.md"`, so the build fails without it.
+tests/
+benchmarks/
+scripts/
+evaluation/
+configs/
+observability/
+docs/
+CLAUDE.md
+Makefile
+docker-compose.yml
+.pre-commit-config.yaml
+.github/
+
+# IDE / OS
+.idea/
+.vscode/
+.claude/
+*.swp
+.DS_Store
