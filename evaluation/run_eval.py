@@ -15,15 +15,9 @@ from core.proxy import strip_socks_proxy_env
 # Ragas and langchain-ollama build httpx clients at import time; see core.proxy.
 strip_socks_proxy_env()
 
-import mlflow  # noqa: E402 — after the proxy cleanup above
-import yaml  # noqa: E402
+import yaml  # noqa: E402 — after the proxy cleanup above
 from loguru import logger  # noqa: E402
 from qdrant_client import QdrantClient  # noqa: E402
-from ragas import EvaluationDataset, RunConfig, evaluate  # noqa: E402
-from ragas.dataset_schema import SingleTurnSample  # noqa: E402
-from ragas.embeddings import LangchainEmbeddingsWrapper  # noqa: E402
-from ragas.llms import LangchainLLMWrapper  # noqa: E402
-from ragas.metrics import answer_relevancy, context_precision, context_recall, faithfulness  # noqa: E402
 
 from api.prompts import prompt_version  # noqa: E402
 from api.rag import RAGPipeline  # noqa: E402
@@ -38,6 +32,8 @@ from evaluation.config import EvalConfig  # noqa: E402
 from evaluation.ragas_embeddings import ProjectEmbeddings  # noqa: E402
 
 if TYPE_CHECKING:
+    from ragas.dataset_schema import SingleTurnSample
+
     from core.types import AskablePipeline
 
 GOLDEN_DATASET_PATH = Path(__file__).parent / "golden_dataset.json"
@@ -46,8 +42,18 @@ GOLDEN_DATASET_PATH = Path(__file__).parent / "golden_dataset.json"
 # byte-identical. Without it, two runs cannot be told apart from a real regression.
 JUDGE_STACK_PACKAGES = ("ragas", "langchain-core", "langchain-ollama")
 METRIC_NAMES = ("faithfulness", "answer_relevancy", "context_precision", "context_recall")
-# Ollama serves one request at a time; parallel workers only produce timeouts.
-RAGAS_RUN_CONFIG = RunConfig(timeout=180, max_retries=3, max_workers=1)
+RAGAS_TIMEOUT_SECONDS = 180
+RAGAS_MAX_RETRIES = 3
+
+
+def require_eval_extra() -> None:
+    """ragas and mlflow live in the [eval] extra, so the CLI can be missing them."""
+    from importlib.util import find_spec
+
+    missing = [name for name in ("ragas", "mlflow") if find_spec(name) is None]
+    if missing:
+        msg = f"Missing evaluation dependencies: {', '.join(missing)}.\nInstall them with `make install`."
+        raise DependencyUnavailableError(msg)
 
 
 def judge_stack_versions() -> dict[str, str]:
@@ -146,6 +152,8 @@ def run_pipeline(
     config: EvalConfig,
 ) -> list[SingleTurnSample]:
 
+    from ragas.dataset_schema import SingleTurnSample
+
     results: list[SingleTurnSample] = []
     failures = 0
 
@@ -199,7 +207,11 @@ def compute_metrics(
     A metric can fail on individual samples when the judge returns unparseable
     output, so the counts are what makes a mean interpretable.
     """
-    from langchain_ollama import ChatOllama
+    from langchain_ollama import ChatOllama  # judge model, independent of the pipeline backend
+    from ragas import EvaluationDataset, RunConfig, evaluate
+    from ragas.embeddings import LangchainEmbeddingsWrapper
+    from ragas.llms import LangchainLLMWrapper
+    from ragas.metrics import answer_relevancy, context_precision, context_recall, faithfulness
 
     # Without format="json", Qwen answers Ragas's structured prompts in prose.
     judge = LangchainLLMWrapper(
@@ -225,7 +237,8 @@ def compute_metrics(
     result = evaluate(
         dataset=EvaluationDataset(samples=ragas_samples),
         metrics=[faithfulness, answer_relevancy, context_precision, context_recall],
-        run_config=RAGAS_RUN_CONFIG,
+        # Ollama serves one request at a time; parallel workers only produce timeouts.
+        run_config=RunConfig(timeout=RAGAS_TIMEOUT_SECONDS, max_retries=RAGAS_MAX_RETRIES, max_workers=1),
         raise_exceptions=False,
     )
 
@@ -301,6 +314,8 @@ def log_to_mlflow(
     config_path: Path,
     n_samples: int,
 ) -> str:
+    import mlflow
+
     mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
     mlflow.set_experiment(settings.mlflow_experiment_name)
 
@@ -353,6 +368,7 @@ def main() -> int:
     try:
         # Before the pipeline, which loads the embedding model. Ollama is always
         # needed: it is the Ragas judge even when the pipeline runs on vLLM.
+        require_eval_extra()
         check_ollama()
         check_mlflow()
         check_qdrant(QdrantClient(url=settings.qdrant_url, check_compatibility=False))

@@ -40,3 +40,13 @@ def test_unknown_keys_are_rejected() -> None:
 def test_missing_required_keys_are_rejected() -> None:
     with pytest.raises(ValueError, match="Field required"):
         EvalConfig.model_validate({"chunk_size": 1024})
+
+
+def test_harness_imports_without_the_eval_extra() -> None:
+    """The suite runs on a dev-only install, so ragas and mlflow must not be
+    imported at module scope.
+    """
+    source = Path("evaluation/run_eval.py").read_text(encoding="utf-8")
+    header = source.split("def ", 1)[0]
+    for package in ("ragas", "mlflow"):
+        assert f"import {package}" not in header, f"{package} must be imported inside the function that uses it"
