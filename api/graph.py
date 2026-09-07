@@ -1,187 +1,179 @@
-"""Agentic RAG graph via LangGraph.
+"""Agentic RAG via LangGraph.
 
-Graph flow:
-  START → query_rewriter → retriever → relevance_grader
-                ↑                              |
-                |     (low relevance + retries left)
-                └──────────────────────────────┘
-                                               |
-                         (sufficient relevance or max retries)
-                                               ↓
-                                           generator → END
+    query_rewriter -> retriever -> relevance_grader -> generator
+
+The grader loops back to rewriting when too few chunks pass, at most MAX_RETRIES times.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import time
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, TypedDict
 
-# langchain_ollama initialises an httpx client at import time and picks up
-# SOCKS proxy env vars, which breaks it if socksio isn't installed.
-# Must run before any import chain that transitively loads httpx.
-for _var in ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
-    os.environ.pop(_var, None)
+from langgraph.graph import END, START, StateGraph
+from loguru import logger
+from pydantic import BaseModel, ValidationError
 
-from langchain_core.messages import HumanMessage  # noqa: E402 — imports below env-pop guard
-from langgraph.graph import END, START, StateGraph  # noqa: E402
-from loguru import logger  # noqa: E402
-
-from api.llm import make_llm  # noqa: E402
+from api.llm import make_llm
+from api.metrics import rag_grader_parse_failures_total
+from api.prompts import QUERY_REWRITE_PROMPT, QUERY_REWRITE_RETRY_PROMPT, RELEVANCE_GRADER_PROMPT
+from api.tracing import get_langfuse_handler
+from api.translation import contains_cyrillic, translate_to_english, translate_to_russian
 
 if TYPE_CHECKING:
+    from langchain_core.callbacks import BaseCallbackHandler
     from langgraph.graph.state import CompiledStateGraph
 
     from api.rag import RAGPipeline
     from api.schemas import Source
+    from core.types import RetrievalHit
 
-MAX_RETRIES = 1  # one retry after initial retrieval
-MIN_RELEVANT_CHUNKS = 2  # minimum chunks that must pass grading to skip retry
+MAX_RETRIES = 1  # one retry after the initial retrieval
+MIN_RELEVANT_CHUNKS = 2  # chunks that must pass grading for the retry to be skipped
+# Relevance is decidable from the opening lines; full chunks double the prompt cost.
+GRADER_PREVIEW_CHARS = 500
+
+
+class RelevanceVerdict(BaseModel):
+    relevant: bool
 
 
 class GraphState(TypedDict):
     question: str
     query: str
     top_k: int
-    hits: list
-    relevant_hits: list
+    hits: list[RetrievalHit]
+    relevant_hits: list[RetrievalHit]
     answer: str
-    sources: list
     retry_count: int
-    timings: dict
-    callbacks: list
+    timings: dict[str, int]
+    callbacks: list[BaseCallbackHandler]
 
 
-def build_agent_graph(pipeline: RAGPipeline) -> CompiledStateGraph:  # noqa: C901, PLR0915
-    llm = make_llm(temperature=0.0)
-    # json_mode=True: Qwen at temperature=0 otherwise returns plain text for grading verdicts.
-    grader_llm = make_llm(temperature=0.0, json_mode=True)
+def _elapsed_ms(since: float) -> int:
+    return int((time.perf_counter() - since) * 1000)
 
-    def query_rewriter(state: GraphState) -> dict[str, Any]:
+
+def _accumulate(state: GraphState, key: str, value: int) -> dict[str, int]:
+
+    timings = dict(state.get("timings") or {})
+    timings[key] = timings.get(key, 0) + value
+    return timings
+
+
+class AgentGraphNodes:
+    """Methods rather than closures so each node can be tested on its own."""
+
+    def __init__(self, pipeline: RAGPipeline) -> None:
+        self._pipeline = pipeline
+        self._llm = pipeline.llm
+        # Without json_mode, Qwen answers the grading prompt in prose at temperature 0.
+        self._grader_llm = make_llm(temperature=0.0, json_mode=True)
+
+    def query_rewriter(self, state: GraphState) -> dict[str, Any]:
         question = state["question"]
         retry_count = state.get("retry_count", 0)
 
         if retry_count == 0:
-            prompt = (
-                "Rewrite the following question to improve document retrieval. "
-                "Output only the rewritten question, nothing else.\n\n"
-                f"Question: {question}"
-            )
+            messages = QUERY_REWRITE_PROMPT.format_messages(question=question)
         else:
-            prompt = (
-                "The previous retrieval did not return sufficiently relevant documents. "
-                "Rewrite the query using different keywords or phrasing to find better results. "
-                "Output only the rewritten query, nothing else.\n\n"
-                f"Original question: {question}\n"
-                f"Previous query: {state.get('query', question)}"
+            messages = QUERY_REWRITE_RETRY_PROMPT.format_messages(
+                question=question,
+                previous_query=state.get("query", question),
             )
 
-        callbacks = state.get("callbacks") or []
-        t0 = time.perf_counter()
-        response = llm.invoke([HumanMessage(content=prompt)], config={"callbacks": callbacks})
-        rewrite_ms = int((time.perf_counter() - t0) * 1000)
+        started = time.perf_counter()
+        response = self._llm.invoke(messages, config={"callbacks": state.get("callbacks") or []})
+        rewrite_ms = _elapsed_ms(started)
 
         query = str(response.content).strip()
+        if not query:
+            logger.warning("query_rewriter returned an empty query — falling back to the original question")
+            query = question
+
         logger.info("query_rewriter | retry={} rewrite={}ms | query={!r}", retry_count, rewrite_ms, query[:80])
+        return {"query": query, "timings": _accumulate(state, "rewrite_ms", rewrite_ms)}
 
-        timings = dict(state.get("timings") or {})
-        timings["rewrite_ms"] = timings.get("rewrite_ms", 0) + rewrite_ms
-        return {"query": query, "timings": timings}
-
-    def retriever(state: GraphState) -> dict[str, Any]:
-        t0 = time.perf_counter()
-        hits = pipeline.retrieve(state["query"], top_k=state.get("top_k", 5))
-        retrieval_ms = int((time.perf_counter() - t0) * 1000)
+    def retriever(self, state: GraphState) -> dict[str, Any]:
+        started = time.perf_counter()
+        hits = self._pipeline.retrieve(state["query"], top_k=state["top_k"])
+        retrieval_ms = _elapsed_ms(started)
 
         logger.info("retriever | hits={} retrieval={}ms | query={!r}", len(hits), retrieval_ms, state["query"][:80])
+        return {"hits": hits, "timings": _accumulate(state, "retrieval_ms", retrieval_ms)}
 
-        timings = dict(state.get("timings") or {})
-        timings["retrieval_ms"] = timings.get("retrieval_ms", 0) + retrieval_ms
-        return {"hits": hits, "timings": timings}
+    def _grade_one(self, query: str, hit: RetrievalHit, callbacks: list[BaseCallbackHandler]) -> bool:
+        """Fails open on an unparseable verdict, but records it."""
+        messages = RELEVANCE_GRADER_PROMPT.format_messages(
+            question=query,
+            document=hit.document.page_content[:GRADER_PREVIEW_CHARS],
+        )
+        try:
+            response = self._grader_llm.invoke(messages, config={"callbacks": callbacks})
+            return RelevanceVerdict.model_validate_json(str(response.content)).relevant
+        except (ValidationError, json.JSONDecodeError, ValueError) as exc:
+            # Counted, not just logged: sustained failures silently degrade the agent
+            # back into plain dense RAG.
+            rag_grader_parse_failures_total.inc()
+            logger.warning("relevance_grader could not parse a verdict (keeping the chunk): {}", exc)
+            return True
 
-    def relevance_grader(state: GraphState) -> dict[str, Any]:
-        query = state["query"]
-        hits = state["hits"]
-
+    def relevance_grader(self, state: GraphState) -> dict[str, Any]:
         callbacks = state.get("callbacks") or []
-        t0 = time.perf_counter()
-        relevant_hits = []
-        for hit in hits:
-            prompt = (
-                f"Question: {query}\n\n"
-                f"Document: {hit.document.page_content[:500]}\n\n"
-                "Is this document relevant to answering the question? "
-                'Respond with JSON: {"relevant": true or false}'
-            )
-            try:
-                response = grader_llm.invoke([HumanMessage(content=prompt)], config={"callbacks": callbacks})
-                if json.loads(str(response.content)).get("relevant", False):
-                    relevant_hits.append(hit)
-            except Exception as exc:
-                # On parse failure include the chunk — safer to over-retrieve than drop good context.
-                logger.warning("relevance_grader parse error (including chunk): {}", exc)
-                relevant_hits.append(hit)
+        started = time.perf_counter()
+        relevant_hits = [hit for hit in state["hits"] if self._grade_one(state["query"], hit, callbacks)]
+        grading_ms = _elapsed_ms(started)
 
-        grading_ms = int((time.perf_counter() - t0) * 1000)
         logger.info(
             "relevance_grader | relevant={}/{} grading={}ms",
             len(relevant_hits),
-            len(hits),
+            len(state["hits"]),
             grading_ms,
         )
-
-        timings = dict(state.get("timings") or {})
-        timings["grading_ms"] = timings.get("grading_ms", 0) + grading_ms
         return {
             "relevant_hits": relevant_hits,
             "retry_count": state.get("retry_count", 0) + 1,
-            "timings": timings,
+            "timings": _accumulate(state, "grading_ms", grading_ms),
         }
 
-    def generator(state: GraphState) -> dict[str, Any]:
-        question = state["question"]
-        hits_for_gen = state.get("relevant_hits") or state["hits"]
-
+    def generator(self, state: GraphState) -> dict[str, Any]:
+        hits = state.get("relevant_hits") or state["hits"]
         callbacks = state.get("callbacks") or []
-        t0 = time.perf_counter()
-        answer = pipeline.generate(question, hits_for_gen, callbacks=callbacks or None)
-        generation_ms = int((time.perf_counter() - t0) * 1000)
 
-        sources = [pipeline._hit_to_source(h, include_contexts=False) for h in hits_for_gen]
+        started = time.perf_counter()
+        answer = self._pipeline.generate(state["question"], hits, callbacks=callbacks or None)
+        generation_ms = _elapsed_ms(started)
 
-        timings = dict(state.get("timings") or {})
-        timings["generation_ms"] = generation_ms
-        timings["total_ms"] = sum(timings.values())
+        logger.info("generator | generation={}ms answer_len={}", generation_ms, len(answer))
+        return {"answer": answer, "timings": _accumulate(state, "generation_ms", generation_ms)}
+
+
+def should_retry(state: GraphState) -> str:
+    relevant = state.get("relevant_hits", [])
+    # relevance_grader has already incremented retry_count by the time this runs.
+    retry_count = state.get("retry_count", 0)
+    if len(relevant) < MIN_RELEVANT_CHUNKS and retry_count <= MAX_RETRIES:
         logger.info(
-            "generator | generation={}ms total={}ms answer_len={}",
-            generation_ms,
-            timings["total_ms"],
-            len(answer),
+            "should_retry -> retry (relevant={} < {}, attempt {} of {})",
+            len(relevant),
+            MIN_RELEVANT_CHUNKS,
+            retry_count,
+            MAX_RETRIES + 1,
         )
-        return {"answer": answer, "sources": sources, "timings": timings}
+        return "retry"
+    return "generate"
 
-    def should_retry(state: GraphState) -> str:
-        relevant = state.get("relevant_hits", [])
-        retry_count = state.get("retry_count", 0)
-        # retry_count is already incremented by relevance_grader before this is called.
-        if len(relevant) < MIN_RELEVANT_CHUNKS and retry_count <= MAX_RETRIES:
-            logger.info(
-                "should_retry → retry (relevant={} < {}, retry_count={} ≤ {})",
-                len(relevant),
-                MIN_RELEVANT_CHUNKS,
-                retry_count,
-                MAX_RETRIES,
-            )
-            return "retry"
-        return "generate"
+
+def build_agent_graph(pipeline: RAGPipeline) -> CompiledStateGraph:
+    nodes = AgentGraphNodes(pipeline)
 
     graph: StateGraph = StateGraph(GraphState)
-    graph.add_node("query_rewriter", query_rewriter)
-    graph.add_node("retriever", retriever)
-    graph.add_node("relevance_grader", relevance_grader)
-    graph.add_node("generator", generator)
+    graph.add_node("query_rewriter", nodes.query_rewriter)
+    graph.add_node("retriever", nodes.retriever)
+    graph.add_node("relevance_grader", nodes.relevance_grader)
+    graph.add_node("generator", nodes.generator)
 
     graph.add_edge(START, "query_rewriter")
     graph.add_edge("query_rewriter", "retriever")
@@ -197,6 +189,7 @@ def build_agent_graph(pipeline: RAGPipeline) -> CompiledStateGraph:  # noqa: C90
 
 
 class AgentPipeline:
+    """The agent graph behind the same RU-EN wrapper as `RAGPipeline`."""
 
     def __init__(self, pipeline: RAGPipeline) -> None:
         self._pipeline = pipeline
@@ -208,27 +201,21 @@ class AgentPipeline:
         top_k: int,
         *,
         include_contexts: bool,
-        rerank_top_n: int = 20,  # noqa: ARG002 — interface parity with RAGPipeline.ask
+        rerank_top_n: int | None = None,  # noqa: ARG002 — interface parity with RAGPipeline.ask
     ) -> tuple[str, list[Source], dict[str, int]]:
-        from api.tracing import get_langfuse_handler  # noqa: PLC0415
-        from api.translation import (  # noqa: PLC0415
-            contains_cyrillic,
-            translate_to_english,
-            translate_to_russian,
-        )
-
         handler = get_langfuse_handler()
         callbacks = [handler] if handler else []
+        llm = self._pipeline.llm
 
         is_russian = contains_cyrillic(question)
         translation_ms = 0
-        t_start = time.perf_counter()
+        started = time.perf_counter()
 
         if is_russian:
-            t_tr0 = time.perf_counter()
-            graph_question = translate_to_english(self._pipeline._llm, question, callbacks=callbacks or None)
-            translation_ms += int((time.perf_counter() - t_tr0) * 1000)
-            logger.info("RU→EN (agent) | in={!r} | out={!r}", question, graph_question)
+            t0 = time.perf_counter()
+            graph_question = translate_to_english(llm, question, callbacks=callbacks or None)
+            translation_ms += _elapsed_ms(t0)
+            logger.info("RU->EN (agent) | in={!r} | out={!r}", question, graph_question)
         else:
             graph_question = question
 
@@ -239,40 +226,41 @@ class AgentPipeline:
             "hits": [],
             "relevant_hits": [],
             "answer": "",
-            "sources": [],
             "retry_count": 0,
             "timings": {},
             "callbacks": callbacks,
         }
-
         result = self._graph.invoke(initial)
-        answer_en = result["answer"]
-        answer = answer_en
+        answer = result.get("answer", "")
 
         if is_russian:
-            t_tr1 = time.perf_counter()
-            answer = translate_to_russian(self._pipeline._llm, answer_en, callbacks=callbacks or None)
-            translation_ms += int((time.perf_counter() - t_tr1) * 1000)
-            logger.info("EN→RU (agent) | in={!r} | out={!r}", answer_en, answer)
+            t1 = time.perf_counter()
+            answer_en = answer
+            answer = translate_to_russian(llm, answer_en, callbacks=callbacks or None)
+            translation_ms += _elapsed_ms(t1)
+            logger.info("EN->RU (agent) | in={!r} | out={!r}", answer_en, answer)
 
         final_hits = result.get("relevant_hits") or result.get("hits", [])
-        sources = [self._pipeline._hit_to_source(h, include_contexts=include_contexts) for h in final_hits]
+        sources = [self._pipeline.hit_to_source(hit, include_contexts=include_contexts) for hit in final_hits]
 
-        # Recompute total_ms end-to-end so translation latency is included.
-        total_ms = int((time.perf_counter() - t_start) * 1000)
+        graph_timings = result.get("timings", {})
+        # The grader counts attempts, not retries.
+        retries = max(result.get("retry_count", 1) - 1, 0)
         timings: dict[str, int] = {
-            "retrieval_ms": result["timings"].get("retrieval_ms", 0),
-            "generation_ms": result["timings"].get("generation_ms", 0),
+            "retrieval_ms": graph_timings.get("retrieval_ms", 0),
+            "generation_ms": graph_timings.get("generation_ms", 0),
+            "rewrite_ms": graph_timings.get("rewrite_ms", 0),
+            "grading_ms": graph_timings.get("grading_ms", 0),
             "translation_ms": translation_ms,
-            "total_ms": total_ms,
-            "rewrite_ms": result["timings"].get("rewrite_ms", 0),
-            "grading_ms": result["timings"].get("grading_ms", 0),
+            "total_ms": _elapsed_ms(started),
+            "retry_count": retries,
         }
 
         logger.info(
-            "AgentPipeline.ask | lang={} retries={} rewrite={}ms retrieval={}ms grading={}ms generation={}ms translation={}ms total={}ms",
+            "AgentPipeline.ask | lang={} retries={} rewrite={}ms retrieval={}ms "
+            "grading={}ms generation={}ms translation={}ms total={}ms",
             "ru" if is_russian else "en",
-            result.get("retry_count", 0) - 1,  # subtract last increment
+            retries,
             timings["rewrite_ms"],
             timings["retrieval_ms"],
             timings["grading_ms"],
@@ -280,12 +268,11 @@ class AgentPipeline:
             timings["translation_ms"],
             timings["total_ms"],
         )
-
         return answer, sources, timings
 
 
 @lru_cache(maxsize=1)
 def get_agent_pipeline() -> AgentPipeline:
-    from api.rag import get_pipeline  # noqa: PLC0415 — circular: api.rag → api.graph → api.rag
+    from api.rag import get_pipeline  # module-scope would make api.rag <-> api.graph a cycle
 
     return AgentPipeline(get_pipeline())
