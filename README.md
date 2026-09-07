@@ -1,7 +1,10 @@
 # DocsRAG
 
 [![CI](https://github.com/MaxBarannikov/DocsRAG/actions/workflows/ci.yml/badge.svg)](https://github.com/MaxBarannikov/DocsRAG/actions/workflows/ci.yml)
-[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![uv](https://img.shields.io/badge/uv-DE5FE9.svg?logo=uv&logoColor=white)](https://docs.astral.sh/uv/)
+[![Docker](https://img.shields.io/badge/Docker-2496ED.svg?logo=docker&logoColor=white)](https://www.docker.com)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-261230.svg)](https://github.com/astral-sh/ruff)
 
 Self-hosted RAG system for question answering over technical documentation, built end
@@ -438,7 +441,3 @@ What would change for a real deployment.
   `mlx-community/Qwen2.5-14B-Instruct-4bit`; the 7B MLX build mangles Russian.
 - **`uv pip sync` removes vllm-metal or the ONNX deps.** Neither is in `uv.lock` by
   design. Recover with `make install-vllm` / `make install-onnx`.
-
-## Author
-
-Maxim Barannikov — [github.com/MaxBarannikov](https://github.com/MaxBarannikov)
