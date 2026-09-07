@@ -13,6 +13,7 @@ from api.graph import (
     AgentGraphNodes,
     GraphState,
     RelevanceVerdict,
+    build_agent_graph,
     should_retry,
 )
 from tests.conftest import make_hit
@@ -112,3 +113,25 @@ def test_should_retry_stops_once_the_retry_budget_is_spent() -> None:
 def test_should_retry_proceeds_when_enough_chunks_pass() -> None:
     enough = [make_hit("a.md", i) for i in range(MIN_RELEVANT_CHUNKS)]
     assert should_retry(_state(relevant_hits=enough, retry_count=1)) == "generate"
+
+
+def test_graph_compiles(monkeypatch) -> None:
+    """LangGraph resolves the GraphState annotations at build time, so every type in
+    them has to exist at runtime, not only under TYPE_CHECKING.
+    """
+
+    def _make_llm(**_kwargs: object) -> StubLLM:
+        return StubLLM([])
+
+    def _retrieve(*_args: object, **_kwargs: object) -> list:
+        return []
+
+    def _generate(*_args: object, **_kwargs: object) -> str:
+        return ""
+
+    monkeypatch.setattr("api.graph.make_llm", _make_llm)
+    pipeline = SimpleNamespace(llm=StubLLM([]), retrieve=_retrieve, generate=_generate)
+
+    graph = build_agent_graph(pipeline)  # type: ignore[arg-type]
+
+    assert {"query_rewriter", "retriever", "relevance_grader", "generator"} <= set(graph.nodes)

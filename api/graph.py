@@ -12,6 +12,7 @@ import time
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, TypedDict
 
+from langchain_core.callbacks import BaseCallbackHandler  # noqa: TC002 — see GraphState note below
 from langgraph.graph import END, START, StateGraph
 from loguru import logger
 from pydantic import BaseModel, ValidationError
@@ -22,13 +23,16 @@ from api.prompts import QUERY_REWRITE_PROMPT, QUERY_REWRITE_RETRY_PROMPT, RELEVA
 from api.tracing import get_langfuse_handler
 from api.translation import contains_cyrillic, translate_to_english, translate_to_russian
 
+# Imported at runtime, not under TYPE_CHECKING: LangGraph resolves the GraphState
+# annotations with get_type_hints() when the graph is built, and `from __future__ import
+# annotations` leaves them as strings that must be evaluable against module globals.
+from core.types import RetrievalHit  # noqa: TC001 — must be resolvable at runtime
+
 if TYPE_CHECKING:
-    from langchain_core.callbacks import BaseCallbackHandler
     from langgraph.graph.state import CompiledStateGraph
 
     from api.rag import RAGPipeline
     from api.schemas import Source
-    from core.types import RetrievalHit
 
 MAX_RETRIES = 1  # one retry after the initial retrieval
 MIN_RELEVANT_CHUNKS = 2  # chunks that must pass grading for the retry to be skipped
