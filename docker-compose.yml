@@ -1,13 +1,9 @@
-# DocsRAG infrastructure stack
+# DocsRAG infrastructure stack.
 #
-# Setup mode: NATIVE OLLAMA (Variant A)
-# Ollama runs natively on the host via `brew install ollama` to use Metal GPU acceleration.
-# Services in this compose file reach Ollama at http://host.docker.internal:11434
-#
-# To switch to FULL DOCKER mode (Variant B), uncomment the `ollama` service below
-# and change OLLAMA_BASE_URL in API service to http://ollama:11434.
-# Variant B is slower on Mac (CPU-only inside Docker on Apple Silicon)
-# but provides single-command startup for demos.
+# Ollama runs natively on the host so it can use Metal GPU acceleration; the API
+# container reaches it at http://host.docker.internal:11434. Running Ollama inside
+# Docker instead is possible but CPU-only on Apple Silicon — see the "Running Ollama
+# in Docker" section of README.md.
 
 services:
   qdrant:
@@ -17,7 +13,6 @@ services:
       - "6333:6333"   # REST API
       - "6334:6334"   # gRPC API
     volumes:
-      # - ./qdrant_storage:/qdrant/storage
       - qdrant_storage:/qdrant/storage
     environment:
       - QDRANT__LOG_LEVEL=INFO
@@ -28,22 +23,6 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
-
-  # -- Variant B (Ollama in Docker) — uncomment to switch --
-  # ollama:
-  #   image: ollama/ollama:latest
-  #   container_name: docsrag-ollama
-  #   ports:
-  #     - "11434:11434"
-  #   volumes:
-  #     - ollama_data:/root/.ollama
-  #   restart: unless-stopped
-  # If you enable this:
-  #   1. Set OLLAMA_BASE_URL: "http://ollama:11434" in api.environment
-  #   2. Remove the extra_hosts block from api
-  #   3. Add `ollama` to api.depends_on
-  #   4. After first start: docker exec -it docsrag-ollama ollama pull qwen2.5:7b-instruct-q4_K_M
-
 
   api:
     build:
@@ -56,9 +35,8 @@ services:
       # Qdrant lives in this compose network — use the service name.
       QDRANT_URL: "${QDRANT_URL:-http://qdrant:6333}"
       QDRANT_COLLECTION: "${QDRANT_COLLECTION:-docsrag}"
-      # Variant A: Ollama runs natively on the host. From the container,
-      # we reach it via host.docker.internal (mapped below in extra_hosts).
-      # Variant B (Ollama in Docker): change OLLAMA_BASE_URL to http://ollama:11434
+      # Ollama runs natively on the host; the container reaches it via
+      # host.docker.internal (mapped below in extra_hosts).
       INFERENCE_BACKEND: "${INFERENCE_BACKEND:-ollama}"
       OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
       OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen2.5:7b-instruct-q4_K_M}"
@@ -73,7 +51,9 @@ services:
       HF_TOKEN: "${HF_TOKEN}"
       LANGFUSE_PUBLIC_KEY: "${LANGFUSE_PUBLIC_KEY}"
       LANGFUSE_SECRET_KEY: "${LANGFUSE_SECRET_KEY}"
-      LANGFUSE_BASE_URL: "${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}"
+      LANGFUSE_HOST: "${LANGFUSE_HOST:-https://cloud.langfuse.com}"
+      RETRIEVAL_STRATEGY: "${RETRIEVAL_STRATEGY:-dense}"
+      API_KEY: "${API_KEY:-}"
     extra_hosts:
       # Required on Linux for host.docker.internal to resolve.
       # On Docker Desktop (macOS) it's already mapped, but specifying it
@@ -84,11 +64,14 @@ services:
       # on every container rebuild.
       - hf_cache:/app/.cache/huggingface
       # Bind-mount source so code edits apply via `make restart` (no rebuild).
+      # Because these shadow the code baked into the image, the image itself is
+      # never exercised locally — CI builds and smoke-tests it instead.
       # Read-only — container doesn't write into these. PYTHONDONTWRITEBYTECODE=1
       # in the Dockerfile keeps Python from trying to write .pyc files.
       # NB: bind mounts override the COPY'd code from the image; if you ever
       # want to test the image as-built, remove these two lines.
       - ./api:/app/api:ro
+      - ./core:/app/core:ro
       - ./indexing:/app/indexing:ro
       - ./embeddings:/app/embeddings:ro
       # Exported ONNX models live in ./models/ (gitignored). Needed when
@@ -98,6 +81,14 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
+    healthcheck:
+      # Defined in the Dockerfile; repeated here only to give it a longer start
+      # period, since the first run downloads the embedding model.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
     restart: unless-stopped
 
   prometheus:
@@ -113,7 +104,8 @@ services:
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=7d"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     restart: unless-stopped
 
   grafana:
@@ -122,7 +114,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: "admin"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: "/var/lib/grafana/dashboards/docsrag.json"
     volumes:
@@ -133,11 +125,12 @@ services:
       - prometheus
     restart: unless-stopped
 
+  # Used only by the host-side evaluation harness; the API does not talk to it.
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.18.0
     container_name: docsrag-mlflow
     ports:
-      - "5000:5000"
+      - "${MLFLOW_PORT:-5555}:5000"
     volumes:
       - mlflow_data:/mlflow
     command: >
@@ -158,4 +151,3 @@ volumes:
   mlflow_data:
   prometheus_data:
   grafana_data:
-  # ollama_data:  # uncomment for Variant B
