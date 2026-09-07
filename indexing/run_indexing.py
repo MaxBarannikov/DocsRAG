@@ -12,14 +12,19 @@ import argparse
 import sys
 import time
 
-from loguru import logger
+from core.proxy import strip_socks_proxy_env
 
-from core.config import settings
-from core.health import DependencyUnavailableError
-from embeddings import make_embedder
-from indexing.chunker import Chunk, chunk_documents
-from indexing.loader import load_markdown_files
-from indexing.qdrant_store import QdrantStore
+# Must run before any httpx client is constructed.
+strip_socks_proxy_env()
+
+from loguru import logger  # noqa: E402 — after the proxy cleanup above
+
+from core.config import settings  # noqa: E402
+from core.health import DependencyUnavailableError  # noqa: E402
+from embeddings import make_embedder  # noqa: E402
+from indexing.chunker import Chunk, chunk_documents  # noqa: E402
+from indexing.loader import load_markdown_files  # noqa: E402
+from indexing.qdrant_store import QdrantStore  # noqa: E402
 
 
 class IndexingError(RuntimeError):

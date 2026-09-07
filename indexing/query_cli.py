@@ -10,12 +10,17 @@ from __future__ import annotations
 import argparse
 import sys
 
-from loguru import logger
-from qdrant_client import QdrantClient
+from core.proxy import strip_socks_proxy_env
 
-from core.config import settings
-from core.health import DependencyUnavailableError, check_qdrant
-from embeddings import make_embedder
+# Must run before any httpx client is constructed.
+strip_socks_proxy_env()
+
+from loguru import logger  # noqa: E402 — after the proxy cleanup above
+from qdrant_client import QdrantClient  # noqa: E402
+
+from core.config import settings  # noqa: E402
+from core.health import DependencyUnavailableError, check_qdrant  # noqa: E402
+from embeddings import make_embedder  # noqa: E402
 
 PREVIEW_CHARS = 300
 
