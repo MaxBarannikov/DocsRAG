@@ -1,74 +1,90 @@
-"""ONNX Runtime embedder for sentence-transformers models exported via scripts/export_onnx.py.
+"""ONNX Runtime embedder for models exported by scripts/export_onnx.py.
 
-Reads the graph-baked `sentence_embedding` output (already pooled + L2-normalized),
-so no manual pooling is needed. Requires the [onnx] extra: `make install-onnx`.
+Reads the graph-baked `sentence_embedding` output, already pooled and normalized, so
+no pooling is reimplemented here — that is what keeps it numerically identical to the
+PyTorch backend. Requires the [onnx] extra.
 """
 
-from collections.abc import Iterable, Sequence
+from __future__ import annotations
+
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import onnxruntime as ort
 from loguru import logger
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 
-DEFAULT_MODEL_DIR = Path("models/bge-small-en-v1.5-onnx-fp32")
+from core.config import settings
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
 SENTENCE_EMBEDDING_OUTPUT = "sentence_embedding"
 
 
 class OnnxEmbedder:
     def __init__(
         self,
-        model_dir: Path | str = DEFAULT_MODEL_DIR,
+        model_dir: Path | str | None = None,
         provider: str = "CPUExecutionProvider",
     ) -> None:
-        self.model_dir = Path(model_dir)
+        self.model_dir = Path(model_dir) if model_dir is not None else settings.embedder_onnx_fp32_path
         self.model_name = self.model_dir.name
-        logger.info(f"Loading ONNX embedder from '{self.model_dir}' on provider '{provider}'")
+        logger.info("Loading ONNX embedder from '{}' on provider '{}'", self.model_dir, provider)
+
+        available = ort.get_available_providers()
+        if provider not in available:
+            msg = f"ONNX Runtime provider {provider!r} is not available. Installed providers: {available}."
+            raise ValueError(msg)
 
         model_path = self.model_dir / "model.onnx"
         if not model_path.exists():
             msg = f"model.onnx not found at {model_path}. Run `make export-onnx` first to create it."
             raise FileNotFoundError(msg)
 
-        self._tokenizer = AutoTokenizer.from_pretrained(self.model_dir)
+        try:
+            self._tokenizer = AutoTokenizer.from_pretrained(self.model_dir)
+        except Exception as exc:
+            msg = (
+                f"No usable tokenizer in {self.model_dir}. The export step copies the tokenizer "
+                f"files alongside model.onnx — re-run `make export-onnx FORCE=1`."
+            )
+            raise RuntimeError(msg) from exc
 
         sess_options = ort.SessionOptions()
         sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
 
-        self._session = ort.InferenceSession(
-            str(model_path),
-            sess_options=sess_options,
-            providers=[provider],
-        )
+        self._session = ort.InferenceSession(str(model_path), sess_options=sess_options, providers=[provider])
 
         output_names = {o.name for o in self._session.get_outputs()}
         if SENTENCE_EMBEDDING_OUTPUT not in output_names:
             msg = (
-                f"Expected '{SENTENCE_EMBEDDING_OUTPUT}' output in {model_path}; "
-                f"got {sorted(output_names)}. Re-export with FORCE=1."
+                f"Expected a {SENTENCE_EMBEDDING_OUTPUT!r} output in {model_path}; got {sorted(output_names)}. "
+                f"Re-export with FORCE=1."
             )
             raise RuntimeError(msg)
 
+        self._input_names = {i.name for i in self._session.get_inputs()}
         self.dimension = self._probe_dimension()
-        logger.info(f"Embedding dimension: {self.dimension}")
+        if self.dimension != settings.embedding_dim:
+            logger.warning(
+                "Embedding dimension {} differs from configured EMBEDDING_DIM={}.",
+                self.dimension,
+                settings.embedding_dim,
+            )
+        logger.info("Embedding dimension: {}", self.dimension)
+
+    def _run(self, batch: list[str]) -> list[list[float]]:
+        encoded = self._tokenizer(batch, padding=True, truncation=True, return_tensors="np")
+        # Tokenizers may emit token_type_ids; feed only what this graph declares.
+        feed = {name: encoded[name] for name in self._input_names if name in encoded}
+        outputs = self._session.run([SENTENCE_EMBEDDING_OUTPUT], feed)
+        return [vector.tolist() for vector in outputs[0]]
 
     def _probe_dimension(self) -> int:
-        """One-shot inference to read the output shape — the graph shape is symbolic so static inspection fails."""
-        encoded = self._tokenizer(
-            ["dimension probe"],
-            padding=True,
-            truncation=True,
-            return_tensors="np",
-        )
-        outputs = self._session.run(
-            [SENTENCE_EMBEDDING_OUTPUT],
-            {
-                "input_ids": encoded["input_ids"],
-                "attention_mask": encoded["attention_mask"],
-            },
-        )
-        return int(outputs[0].shape[-1])
+        """One-shot inference; the graph's output shape is symbolic."""
+        return len(self._run(["dimension probe"])[0])
 
     def encode(
         self,
@@ -76,7 +92,7 @@ class OnnxEmbedder:
         *,
         batch_size: int = 32,
         show_progress: bool = True,
-        prefix: str = "",  # kept for API parity with PytorchEmbedder; unused for bge
+        prefix: str = "",  # kept for parity with PytorchEmbedder; bge needs no prefix
     ) -> list[list[float]]:
         if not texts:
             return []
@@ -89,20 +105,5 @@ class OnnxEmbedder:
 
         all_embeddings: list[list[float]] = []
         for start in batch_starts:
-            batch = prefixed[start : start + batch_size]
-            encoded = self._tokenizer(
-                batch,
-                padding=True,
-                truncation=True,
-                return_tensors="np",
-            )
-            outputs = self._session.run(
-                [SENTENCE_EMBEDDING_OUTPUT],
-                {
-                    "input_ids": encoded["input_ids"],
-                    "attention_mask": encoded["attention_mask"],
-                },
-            )
-            all_embeddings.extend(outputs[0].tolist())
-
+            all_embeddings.extend(self._run(prefixed[start : start + batch_size]))
         return all_embeddings

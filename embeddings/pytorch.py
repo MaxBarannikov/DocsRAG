@@ -1,20 +1,50 @@
-"""sentence-transformers embedder with auto device selection (MPS > CUDA > CPU)."""
+"""sentence-transformers embedder with automatic device selection (MPS > CUDA > CPU)."""
 
-from collections.abc import Sequence
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import torch
 from loguru import logger
 from sentence_transformers import SentenceTransformer
 
+from core.config import settings
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
 
 class PytorchEmbedder:
-    def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5", device: str | None = None) -> None:
+    def __init__(self, model_name: str | None = None, device: str | None = None) -> None:
+        self.model_name = model_name or settings.embedding_model
         resolved_device = device if device is not None else self._select_device()
-        logger.info(f"Loading PyTorch embedder '{model_name}' on device '{resolved_device}'")
-        self._model = SentenceTransformer(model_name, device=resolved_device)
-        self.model_name = model_name
-        self.dimension = self._model.get_embedding_dimension()
-        logger.info(f"Embedding dimension: {self.dimension}")
+        logger.info("Loading PyTorch embedder '{}' on device '{}'", self.model_name, resolved_device)
+
+        try:
+            self._model = SentenceTransformer(self.model_name, device=resolved_device)
+        except Exception as exc:
+            msg = (
+                f"Failed to load embedding model {self.model_name!r} on device {resolved_device!r}. "
+                f"The first run downloads it from Hugging Face, so check network access."
+            )
+            raise RuntimeError(msg) from exc
+
+        self.dimension = int(self._embedding_dimension() or 0)
+        if self.dimension != settings.embedding_dim:
+            logger.warning(
+                "Embedding dimension {} differs from configured EMBEDDING_DIM={}. "
+                "Indexing into an existing collection built at the other width will fail.",
+                self.dimension,
+                settings.embedding_dim,
+            )
+        logger.info("Embedding dimension: {}", self.dimension)
+
+    def _embedding_dimension(self) -> int | None:
+        """5.x renamed the getter and warns on the old name; older releases only have it."""
+        getter = getattr(self._model, "get_embedding_dimension", None)
+        if getter is None:
+            getter = self._model.get_sentence_embedding_dimension
+        return getter()
 
     @staticmethod
     def _select_device() -> str:
@@ -30,7 +60,7 @@ class PytorchEmbedder:
         *,
         batch_size: int = 32,
         show_progress: bool = True,
-        prefix: str = "",  # use "query: "/"passage: " for e5 models; bge doesn't need it
+        prefix: str = "",  # e5-style models need "query: "/"passage: "; bge does not
     ) -> list[list[float]]:
         if not texts:
             return []
@@ -41,6 +71,6 @@ class PytorchEmbedder:
             batch_size=batch_size,
             show_progress_bar=show_progress,
             convert_to_numpy=True,
-            normalize_embeddings=True,  # critical for cosine similarity
+            normalize_embeddings=True,  # required: the collections use cosine distance
         )
-        return embeddings.tolist()
+        return [vector.tolist() for vector in embeddings]

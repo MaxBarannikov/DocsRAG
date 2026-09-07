@@ -1,11 +1,10 @@
-"""Pluggable embedder backends (pytorch, onnx-fp32, onnx-int8).
+"""Pluggable embedder backends.
 
-OnnxEmbedder is NOT re-exported here — it requires the optional [onnx] extra and
-imports onnxruntime at module load time. Use `from embeddings.onnx import OnnxEmbedder`
-or let make_embedder() handle it lazily.
+Only the factory is re-exported: each backend imports heavy dependencies at module
+load, so `make_embedder()` pulls in exactly one of them. Import the concrete classes
+from their own modules when you need the type.
 """
 
 from embeddings.factory import make_embedder
-from embeddings.pytorch import PytorchEmbedder
 
-__all__ = ["PytorchEmbedder", "make_embedder"]
+__all__ = ["make_embedder"]
