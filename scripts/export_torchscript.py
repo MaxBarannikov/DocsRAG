@@ -1,24 +1,13 @@
-"""Export a sentence-transformers backbone to TorchScript (traced).
+"""Trace a sentence-transformers backbone to TorchScript.
 
-Task 9 step 11 — bonus row in the embedder benchmark. NOT integrated into the
-production embedder factory (TorchScript in 2026 is a legacy format, kept here
-only for the bench-table comparison; ONNX is the production-relevant alt).
+Produces the TorchScript row of the embedder benchmark only — TorchScript is a legacy
+format and is deliberately not wired into the embedder factory. The traced graph
+returns `last_hidden_state`; pooling and normalization are applied by the caller,
+unlike the ONNX export which bakes them in.
 
-What gets traced:
-    The underlying HuggingFace AutoModel (BERT-family transformer backbone),
-    wrapped so it returns `last_hidden_state` directly. Pooling and L2 norm
-    are done in the bench wrapper (analogous to the manual-pooling path we
-    considered for ONNX before settling on the graph-baked `sentence_embedding`
-    output — see CLAUDE.md decision #4).
+Idempotent; pass --force to re-trace.
 
-Output: a single .pt file at models/<basename>.pt + tokenizer files copied
-from the HF cache via a separate AutoTokenizer.from_pretrained() in the bench.
-Idempotent: skips if model.pt already exists unless --force is passed.
-
-Usage:
-    python scripts/export_torchscript.py
-    python scripts/export_torchscript.py --model BAAI/bge-base-en-v1.5
-    python scripts/export_torchscript.py --force
+    python scripts/export_torchscript.py --model BAAI/bge-base-en-v1.5 --force
 """
 
 from __future__ import annotations
@@ -58,8 +47,7 @@ def main() -> int:
     model.eval()
     tokenizer = AutoTokenizer.from_pretrained(args.model)
 
-    # Wrap so the traced forward returns last_hidden_state directly (a tensor),
-    # avoiding the HF ModelOutput dataclass that TorchScript can't trace cleanly.
+    # Return the tensor directly; TorchScript cannot trace HF's ModelOutput dataclass.
     class _BackboneWrapper(torch.nn.Module):
         def __init__(self, inner: torch.nn.Module) -> None:
             super().__init__()

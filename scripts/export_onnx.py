@@ -1,17 +1,10 @@
-"""Export a sentence-transformers model to ONNX FP32.
+"""Export a sentence-transformers model to ONNX FP32 via optimum-cli.
 
-Wraps `optimum-cli export onnx --task feature-extraction`. The exported graph
-has two outputs: `token_embeddings` (raw) and `sentence_embedding` (pooled +
-L2-normalized). We use the latter — pooling is baked into the graph and
-byte-identical to PyTorch sentence-transformers output.
+The exported graph offers `token_embeddings` and `sentence_embedding`; we read the
+latter, which bakes pooling and normalization in and so stays byte-identical to
+PyTorch. Idempotent; pass --force to re-export.
 
-Idempotent: exits 0 if model.onnx already exists, unless --force is passed.
-
-Usage:
-    python scripts/export_onnx.py
-    python scripts/export_onnx.py --model BAAI/bge-base-en-v1.5
-    python scripts/export_onnx.py --force
-    python scripts/export_onnx.py --output models/custom/
+    python scripts/export_onnx.py --model BAAI/bge-base-en-v1.5 --force
 """
 
 from __future__ import annotations
@@ -22,11 +15,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+from scripts._paths import resolve_artifact_dir
+
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 
 
 def _check_onnx_extra_installed() -> None:
-    """Fail fast with a helpful hint if the [onnx] extra is not installed."""
+
     try:
         import onnx  # noqa: F401
         import optimum  # noqa: F401
@@ -55,7 +50,10 @@ def main() -> int:
 
     _check_onnx_extra_installed()
 
-    output_dir: Path = Path(args.output) if args.output else _default_output_dir(args.model)
+    try:
+        output_dir = resolve_artifact_dir(args.output or _default_output_dir(args.model))
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     model_file = output_dir / "model.onnx"
 
     if model_file.exists() and not args.force:
@@ -81,7 +79,7 @@ def main() -> int:
     ]
     print(f"→ Exporting {args.model} → {output_dir}/")
     print(f"   {' '.join(cmd)}")
-    result = subprocess.run(cmd, check=False)
+    result = subprocess.run(cmd, check=False)  # noqa: S603
     if result.returncode != 0:
         print(f"✗ optimum-cli failed with exit code {result.returncode}")
         return result.returncode
