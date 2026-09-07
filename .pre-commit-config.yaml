@@ -1,21 +1,38 @@
+# Mirrors the CI quality gates so failures surface before pushing.
+# Install once with: pre-commit install
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.12
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
     hooks:
-      - id: ruff-format
-      - id: ruff-check
-        args: ["--fix", "--unsafe-fixes"]
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: mixed-line-ending
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.19.1
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.6
+    hooks:
+      # Lint before formatting: --fix can leave its rewrites unformatted, and a
+      # later formatting pass is what tidies them up.
+      - id: ruff-check
+        args: ["--fix"]
+      - id: ruff-format
+
+  # Run mypy from the project environment rather than an isolated one. The
+  # mirrors-mypy hook installs its own venv, where third-party packages are absent
+  # and every annotation resolves to Any — which both hides real errors and flags
+  # legitimate `type: ignore` comments as unused. Requires `make install` first.
+  - repo: local
     hooks:
       - id: mypy
+        name: mypy
+        entry: mypy
+        language: system
+        types: [python]
         pass_filenames: false
-        args:
-          - "--config-file=pyproject.toml"
-          - "."
-        additional_dependencies:
-          - pydantic
-          - pydantic-settings
-          - types-requests
-          - types-aiofiles
+        args: ["--config-file=pyproject.toml", "."]
