@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 from langchain_core.prompts import ChatPromptTemplate
 
 SYSTEM_PROMPT = """You are a precise technical assistant answering questions about FastAPI documentation.
@@ -57,3 +59,56 @@ Rules you MUST follow:
 TRANSLATE_EN_TO_RU_PROMPT = ChatPromptTemplate.from_messages(
     [("system", TRANSLATE_EN_TO_RU_SYSTEM), ("user", "{text}")]
 )
+
+
+# Agentic RAG prompts (api/graph.py)
+
+QUERY_REWRITE_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            (
+                "Rewrite the user's question to improve document retrieval. "
+                "Output only the rewritten question, with no preamble or commentary."
+            ),
+        ),
+        ("user", "{question}"),
+    ]
+)
+
+QUERY_REWRITE_RETRY_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            (
+                "The previous retrieval did not return sufficiently relevant documents. "
+                "Rewrite the query using different keywords or phrasing to find better results. "
+                "Output only the rewritten query, with no preamble or commentary."
+            ),
+        ),
+        ("user", "Original question: {question}\nPrevious query: {previous_query}"),
+    ]
+)
+
+RELEVANCE_GRADER_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            (
+                "Decide whether the document helps answer the question. "
+                'Respond with JSON only, in the form {{"relevant": true}} or {{"relevant": false}}.'
+            ),
+        ),
+        ("user", "Question: {question}\n\nDocument: {document}"),
+    ]
+)
+
+
+def prompt_version() -> str:
+    """Content hash, logged with eval runs.
+
+    A hand-maintained version string drifts the moment a prompt is edited, silently
+    invalidating comparisons between MLflow runs.
+    """
+    digest = hashlib.sha256(f"{SYSTEM_PROMPT}\n{USER_PROMPT}".encode()).hexdigest()
+    return digest[:12]
