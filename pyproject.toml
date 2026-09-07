@@ -59,8 +59,8 @@ onnx = [
 ]
 
 [project.urls]
-Repository = "https://github.com/PureLeach/DocsRAG"
-Issues = "https://github.com/PureLeach/DocsRAG/issues"
+Repository = "https://github.com/MaxBarannikov/DocsRAG"
+Issues = "https://github.com/MaxBarannikov/DocsRAG/issues"
 
 # The Docker image runs on CPU, but PyPI's linux torch wheel bundles the full CUDA
 # runtime (~2 GB of nvidia-* packages) that would never be used. Pull the CPU build
