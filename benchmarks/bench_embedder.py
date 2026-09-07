@@ -1,81 +1,82 @@
-"""Embedder backend benchmark — single-query latency (p50/p95/p99) and throughput (vec/s).
+"""Embedder latency (p50/p95/p99) and throughput, over real documentation chunks.
 
-Backends: PyTorch-MPS, PyTorch-CPU, ONNX-CPU-FP32, ONNX-CPU-INT8, TorchScript-CPU (if exported).
-Uses real FastAPI docs chunks for production-like text length distribution.
+The comparison only means something if every backend computes the *same* embedding
+function, so `--verify-parity` checks each one against PyTorch before timing it.
 
-Usage:
-    uv run python benchmarks/bench_embedder.py
-    uv run python benchmarks/bench_embedder.py --single-runs 100
-    uv run python benchmarks/bench_embedder.py --skip-onnx
+    python -m benchmarks.bench_embedder --single-runs 100 --verify-parity
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.config import settings
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    EncodeFn = Callable[[list[str]], list[list[float]]]
 
 SINGLE_QUERY = "How do I define a path parameter in FastAPI?"
 BATCH_SIZES = (1, 8, 32, 128)
 WARMUP_RUNS = 10
 DEFAULT_SINGLE_RUNS = 50
 THROUGHPUT_RUNS_PER_BATCH = 5
+TORCHSCRIPT_PATH = Path("models/bge-small-en-v1.5.pt")
+PARITY_MIN_COSINE = 0.999
 
 
 def load_batch_texts(n: int) -> list[str]:
-    from api.config import settings
     from indexing.chunker import chunk_documents
     from indexing.loader import load_markdown_files
 
     docs = load_markdown_files(Path(settings.docs_source_path))
-    chunks = chunk_documents(docs, chunk_size=1024, chunk_overlap=100)
+    chunks = chunk_documents(docs, chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap)
     texts = [c.text for c in chunks[:n]]
     if len(texts) < n:
-        msg = f"need {n} chunks, corpus has {len(texts)}"
+        msg = f"Need {n} chunks but the corpus yielded {len(texts)}. Run `make fetch-docs` first."
         raise SystemExit(msg)
     return texts
 
 
-def measure_latency(encode_fn, runs: int) -> dict[str, float]:
-    """Single-query encode latency in ms, with warmup."""
+def measure_latency(encode_fn: EncodeFn, runs: int) -> dict[str, float]:
     for _ in range(WARMUP_RUNS):
         encode_fn([SINGLE_QUERY])
     times = []
     for _ in range(runs):
-        t0 = time.perf_counter()
+        started = time.perf_counter()
         encode_fn([SINGLE_QUERY])
-        times.append((time.perf_counter() - t0) * 1000)
+        times.append((time.perf_counter() - started) * 1000)
     return {
         "p50": float(np.percentile(times, 50)),
         "p95": float(np.percentile(times, 95)),
         "p99": float(np.percentile(times, 99)),
-        "min": min(times),
-        "max": max(times),
+        "min": float(min(times)),
+        "max": float(max(times)),
     }
 
 
-def measure_throughput(encode_fn, batch: list[str], runs: int) -> float:
-    """Vectors per second for the given batch (avg over `runs` repetitions)."""
+def measure_throughput(encode_fn: EncodeFn, batch: list[str], runs: int) -> float:
     for _ in range(2):
         encode_fn(batch)
     times = []
     for _ in range(runs):
-        t0 = time.perf_counter()
+        started = time.perf_counter()
         encode_fn(batch)
-        times.append(time.perf_counter() - t0)
+        times.append(time.perf_counter() - started)
     return len(batch) / float(np.mean(times))
 
 
-def _make_torchscript_encode_fn(model_path: Path, tokenizer_name: str, device: str = "cpu"):
-    """Build an encode_fn around a traced TorchScript backbone.
-
-    Traced backbone returns last_hidden_state; we mean-pool + L2-normalize
-    to match OnnxEmbedder / PytorchEmbedder output semantics.
+def make_torchscript_encode_fn(model_path: Path, tokenizer_name: str, device: str = "cpu") -> EncodeFn:
+    """The traced graph returns `last_hidden_state`, so pooling happens here. bge-small
+    pools on CLS; mean-pooling instead would silently benchmark a different function.
     """
     import torch
     from transformers import AutoTokenizer
@@ -84,18 +85,18 @@ def _make_torchscript_encode_fn(model_path: Path, tokenizer_name: str, device: s
     model.eval()
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     torch_device = torch.device(device)
+    batch_size = 32
 
     def encode(texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
         all_embeddings: list[list[float]] = []
-        for start in range(0, len(texts), 32):
-            batch = texts[start : start + 32]
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start : start + batch_size]
             inputs = tokenizer(batch, padding=True, truncation=True, return_tensors="pt").to(torch_device)
             with torch.no_grad():
                 last_hidden = model(inputs["input_ids"], inputs["attention_mask"])
-            mask = inputs["attention_mask"].unsqueeze(-1).float()
-            pooled = (last_hidden * mask).sum(1) / mask.sum(1).clamp(min=1e-9)
+            pooled = last_hidden[:, 0]  # CLS token, matching bge-small's pooling config
             normalized = torch.nn.functional.normalize(pooled, p=2, dim=1)
             all_embeddings.extend(normalized.cpu().tolist())
         return all_embeddings
@@ -103,26 +104,102 @@ def _make_torchscript_encode_fn(model_path: Path, tokenizer_name: str, device: s
     return encode
 
 
-def bench_backend(name: str, encode_fn, single_runs: int, batch_texts: list[str]) -> dict:
-    print(f"\n▶ {name}")
-    lat = measure_latency(encode_fn, single_runs)
+def cosine_against_reference(encode_fn: EncodeFn, reference: EncodeFn, texts: list[str]) -> float:
+    """Lowest per-text cosine against the reference encoder."""
+    a = np.asarray(reference(texts), dtype=np.float64)
+    b = np.asarray(encode_fn(texts), dtype=np.float64)
+    if a.shape != b.shape:
+        return 0.0
+    return float((a * b).sum(axis=1).min())
+
+
+def bench_backend(
+    name: str,
+    encode_fn: EncodeFn,
+    single_runs: int,
+    batch_texts: list[str],
+) -> dict[str, object]:
+    print(f"\n> {name}")
+    latency = measure_latency(encode_fn, single_runs)
     print(
-        f"  latency (single query, ms): p50={lat['p50']:5.1f}  p95={lat['p95']:5.1f}  p99={lat['p99']:5.1f}  "
-        f"(min={lat['min']:.1f}, max={lat['max']:.1f})"
+        f"  latency (single query, ms): p50={latency['p50']:5.1f}  p95={latency['p95']:5.1f}  "
+        f"p99={latency['p99']:5.1f}  (min={latency['min']:.1f}, max={latency['max']:.1f})"
     )
-    tputs: dict[int, float] = {}
-    for bs in BATCH_SIZES:
-        tputs[bs] = measure_throughput(encode_fn, batch_texts[:bs], THROUGHPUT_RUNS_PER_BATCH)
-    tput_str = "  ".join(f"bs={bs}: {tputs[bs]:7.1f}" for bs in BATCH_SIZES)
-    print(f"  throughput (vec/s): {tput_str}")
-    return {"latency": lat, "throughput": tputs}
+    throughput = {bs: measure_throughput(encode_fn, batch_texts[:bs], THROUGHPUT_RUNS_PER_BATCH) for bs in BATCH_SIZES}
+    print("  throughput (vec/s): " + "  ".join(f"bs={bs}: {throughput[bs]:7.1f}" for bs in BATCH_SIZES))
+    return {"latency": latency, "throughput": throughput}
+
+
+def collect_backends(*, skip_onnx: bool) -> list[tuple[str, EncodeFn]]:
+
+    import torch
+
+    from embeddings.pytorch import PytorchEmbedder
+
+    backends: list[tuple[str, EncodeFn]] = []
+
+    if torch.backends.mps.is_available():
+        mps = PytorchEmbedder(device="mps")
+        backends.append(("PyTorch-MPS", lambda t: mps.encode(t, show_progress=False)))
+    elif torch.cuda.is_available():
+        cuda = PytorchEmbedder(device="cuda")
+        backends.append(("PyTorch-CUDA", lambda t: cuda.encode(t, show_progress=False)))
+    else:
+        print("  (no GPU backend available — benchmarking CPU only)")
+
+    cpu = PytorchEmbedder(device="cpu")
+    backends.append(("PyTorch-CPU", lambda t: cpu.encode(t, show_progress=False)))
+
+    if not skip_onnx:
+        for label, path in (
+            ("ONNX-CPU-FP32", settings.embedder_onnx_fp32_path),
+            ("ONNX-CPU-INT8", settings.embedder_onnx_int8_path),
+        ):
+            try:
+                from embeddings.onnx import OnnxEmbedder
+
+                embedder = OnnxEmbedder(path)
+            except Exception as exc:  # noqa: BLE001 — a missing artifact skips one row, not the run
+                print(f"  skipping {label}: {exc}")
+                continue
+            backends.append((label, lambda t, e=embedder: e.encode(t, show_progress=False)))
+
+    if TORCHSCRIPT_PATH.exists():
+        backends.append(
+            ("TorchScript-CPU", make_torchscript_encode_fn(TORCHSCRIPT_PATH, settings.embedding_model, device="cpu"))
+        )
+
+    return backends
+
+
+def print_summary(results: dict[str, dict[str, object]]) -> None:
+    print("\n" + "=" * 78)
+    print("Summary: single-query latency (ms)")
+    print("=" * 78)
+    print(f"| {'Backend':<16} | {'p50':>6} | {'p95':>6} | {'p99':>6} |")
+    print(f"|{'-' * 18}|{'-' * 8}|{'-' * 8}|{'-' * 8}|")
+    for name, result in results.items():
+        latency = result["latency"]
+        print(f"| {name:<16} | {latency['p50']:>6.1f} | {latency['p95']:>6.1f} | {latency['p99']:>6.1f} |")
+
+    print("\n" + "=" * 78)
+    print("Summary: throughput (vectors/sec)")
+    print("=" * 78)
+    print(f"| {'Backend':<16} | " + " | ".join(f"bs={bs:<3}" for bs in BATCH_SIZES) + " |")
+    print(f"|{'-' * 18}|" + "|".join("-" * 8 for _ in BATCH_SIZES) + "|")
+    for name, result in results.items():
+        throughput = result["throughput"]
+        print(f"| {name:<16} | " + " | ".join(f"{throughput[bs]:>5.1f}" for bs in BATCH_SIZES) + " |")
+    print("=" * 78)
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--single-runs", type=int, default=DEFAULT_SINGLE_RUNS, help="runs for latency measurement")
-    p.add_argument("--skip-onnx", action="store_true", help="skip ONNX backends (when [onnx] extra not installed)")
-    args = p.parse_args()
+    parser = argparse.ArgumentParser(description="Embedder backend benchmark")
+    parser.add_argument("--single-runs", type=int, default=DEFAULT_SINGLE_RUNS)
+    parser.add_argument("--skip-onnx", action="store_true", help="Skip ONNX backends")
+    parser.add_argument("--verify-parity", action="store_true", help="Check each backend against PyTorch first")
+    parser.add_argument("--json", type=Path, default=None, help="Also write raw results to this file")
+    args = parser.parse_args()
 
     print("=" * 78)
     print("DocsRAG embedder backend benchmark")
@@ -130,77 +207,26 @@ def main() -> int:
     print("=" * 78)
 
     batch_texts = load_batch_texts(max(BATCH_SIZES))
-    results: dict[str, dict] = {}
+    backends = collect_backends(skip_onnx=args.skip_onnx)
+    if not backends:
+        print("No embedder backend could be constructed.")
+        return 1
 
-    from embeddings.pytorch import PytorchEmbedder
+    if args.verify_parity:
+        reference_name, reference_fn = backends[0]
+        parity_texts = batch_texts[:16]
+        print(f"\nParity check against {reference_name} (min cosine over {len(parity_texts)} chunks):")
+        for name, encode_fn in backends[1:]:
+            cosine = cosine_against_reference(encode_fn, reference_fn, parity_texts)
+            verdict = "ok" if cosine >= PARITY_MIN_COSINE else "DIFFERENT EMBEDDING FUNCTION"
+            print(f"  {name:<16} {cosine:.6f}  {verdict}")
 
-    pt_mps = PytorchEmbedder(device="mps")
-    results["PyTorch-MPS"] = bench_backend(
-        "PyTorch-MPS",
-        lambda t: pt_mps.encode(t, show_progress=False),
-        args.single_runs,
-        batch_texts,
-    )
+    results = {name: bench_backend(name, fn, args.single_runs, batch_texts) for name, fn in backends}
+    print_summary(results)
 
-    pt_cpu = PytorchEmbedder(device="cpu")
-    results["PyTorch-CPU"] = bench_backend(
-        "PyTorch-CPU",
-        lambda t: pt_cpu.encode(t, show_progress=False),
-        args.single_runs,
-        batch_texts,
-    )
-
-    if not args.skip_onnx:
-        from api.config import settings
-        from embeddings.onnx import OnnxEmbedder
-
-        onnx_fp32 = OnnxEmbedder(settings.embedder_onnx_fp32_path)
-        results["ONNX-CPU-FP32"] = bench_backend(
-            "ONNX-CPU-FP32",
-            lambda t: onnx_fp32.encode(t, show_progress=False),
-            args.single_runs,
-            batch_texts,
-        )
-
-        onnx_int8 = OnnxEmbedder(settings.embedder_onnx_int8_path)
-        results["ONNX-CPU-INT8"] = bench_backend(
-            "ONNX-CPU-INT8",
-            lambda t: onnx_int8.encode(t, show_progress=False),
-            args.single_runs,
-            batch_texts,
-        )
-
-    torchscript_path = Path("models/bge-small-en-v1.5.pt")
-    if torchscript_path.exists():
-        encode_fn = _make_torchscript_encode_fn(torchscript_path, "BAAI/bge-small-en-v1.5", device="cpu")
-        results["TorchScript-CPU"] = bench_backend(
-            "TorchScript-CPU",
-            encode_fn,
-            args.single_runs,
-            batch_texts,
-        )
-
-    print("\n" + "=" * 78)
-    print("Summary: single-query latency (ms)")
-    print("=" * 78)
-    print(f"| {'Backend':<16} | {'p50':>6} | {'p95':>6} | {'p99':>6} |")
-    print(f"|{'-' * 18}|{'-' * 8}|{'-' * 8}|{'-' * 8}|")
-    for name, r in results.items():
-        lat = r["latency"]
-        print(f"| {name:<16} | {lat['p50']:>6.1f} | {lat['p95']:>6.1f} | {lat['p99']:>6.1f} |")
-
-    print("\n" + "=" * 78)
-    print("Summary: throughput (vectors/sec)")
-    print("=" * 78)
-    bs_headers = " | ".join(f"bs={bs:<3}" for bs in BATCH_SIZES)
-    print(f"| {'Backend':<16} | {bs_headers} |")
-    print(f"|{'-' * 18}|" + "|".join(f"{'-' * 8}" for _ in BATCH_SIZES) + "|")
-    for name, r in results.items():
-        tputs = r["throughput"]
-        cells = " | ".join(f"{tputs[bs]:>5.1f}" for bs in BATCH_SIZES)
-        print(f"| {name:<16} | {cells} |")
-
-    print("=" * 78)
+    if args.json:
+        args.json.write_text(json.dumps(results, indent=2, default=str), encoding="utf-8")
+        print(f"\nRaw results written to {args.json}")
     return 0
 
 
