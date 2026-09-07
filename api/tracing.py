@@ -1,24 +1,51 @@
-"""LangFuse tracing helpers — no-ops when keys are not configured."""
+"""LangFuse tracing, a no-op when unconfigured or unusable."""
 
 from __future__ import annotations
 
 import os
-from typing import Any
+from functools import lru_cache
+from typing import TYPE_CHECKING
 
-# LangFuse uses httpx internally — unset SOCKS proxy vars to avoid import errors.
-for _var in ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
-    os.environ.pop(_var, None)
+from loguru import logger
 
-from api.config import settings  # noqa: E402 — import after proxy cleanup
+from core.config import settings
+
+if TYPE_CHECKING:
+    from langchain_core.callbacks import BaseCallbackHandler
 
 
-def get_langfuse_handler() -> Any | None:
-    """Return a LangFuse CallbackHandler for this request, or None if tracing is not configured."""
-    if not settings.langfuse_public_key or not settings.langfuse_secret_key:
+@lru_cache(maxsize=1)
+def get_langfuse_handler() -> BaseCallbackHandler | None:
+    """Handler for this process, or None when tracing is off or the keys are rejected.
+
+    Credentials are checked up front because the SDK exports spans in the background:
+    bad keys otherwise surface as a bare 401 on stderr for every single request.
+    """
+    if not settings.tracing_enabled:
         return None
+
+    # The SDK reads its host from the environment.
+    os.environ.setdefault("LANGFUSE_HOST", settings.langfuse_host)
+
     try:
-        from langfuse.langchain import CallbackHandler  # noqa: PLC0415 — lazy: only import when tracing enabled
+        from langfuse import get_client
+        from langfuse.langchain import CallbackHandler
 
-        return CallbackHandler()
-    except Exception:
+        if not get_client().auth_check():
+            logger.warning(
+                "LangFuse credentials were rejected by {} — tracing is disabled for this run. "
+                "Check the keys under Settings > API Keys, and that the project region "
+                "matches LANGFUSE_HOST (the US and EU clouds issue different keypairs). "
+                "Leave LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY empty to disable tracing "
+                "deliberately.",
+                settings.langfuse_host,
+            )
+            return None
+
+        handler = CallbackHandler()
+    except Exception as exc:  # noqa: BLE001 — tracing must never break a request
+        logger.warning("LangFuse tracing is configured but the handler could not be created: {}", exc)
         return None
+
+    logger.info("LangFuse tracing enabled (host={})", settings.langfuse_host)
+    return handler
