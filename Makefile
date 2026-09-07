@@ -1,19 +1,24 @@
-# Load .env if present so `make` targets honour the same config as
-# docker-compose and the Python app. Make doesn't read .env on its own —
-# without this block, $(VLLM_MODEL) etc. fall back to the `?=` defaults
-# below even when .env sets them. `export` propagates the vars to recipes.
+# Read .env so recipes can interpolate values like $(VLLM_MODEL) and $(VLLM_PORT).
+#
+# Deliberately NOT `export`ed. Make's parser is not a dotenv parser: it keeps quotes
+# as part of the value, so `KEY="secret"` would be exported as `"secret"` with the
+# quotes attached. Since python-dotenv does not override variables already present in
+# the environment, that corrupted value would win over the correct one inside every
+# child process — which showed up as LangFuse rejecting valid keys with a 401.
+#
+# Without `export`, each consumer parses .env itself: Python through python-dotenv,
+# Docker Compose through its own loader. Both handle quoting correctly.
 ifneq (,$(wildcard .env))
     include .env
-    export
 endif
 
 .PHONY: help install up down logs ollama-status \
-        format test \
+        lint type-check format test ci \
         fetch-docs index reindex smoke \
         build rebuild restart api-logs api-shell health ask warmup \
         eval mlflow-ui prometheus-ui grafana-ui \
         install-vllm vllm-start vllm-status install-onnx export-onnx quantize-onnx \
-        reindex-onnx reindex-int8 bench-embedder export-torchscript clean
+        reindex-onnx reindex-int8 bench-embedder bench-backends export-torchscript clean
 
 # Default question for `make ask` if Q is not provided
 Q ?= How do I define a path parameter in FastAPI?
@@ -25,7 +30,7 @@ help:
 	@echo "    make install       - Install Python dependencies (uv venv + editable install)"
 	@echo ""
 	@echo "  Lifecycle:"
-	@echo "    make up            - Start all Docker services (Qdrant + API) and check Ollama"
+	@echo "    make up            - Start all Docker services (Qdrant, API, Prometheus, Grafana, MLflow)"
 	@echo "    make down          - Stop Docker services"
 	@echo "    make build         - Build the API Docker image"
 	@echo "    make rebuild       - Rebuild the API image without cache and restart (use after pyproject/Dockerfile changes)"
@@ -40,7 +45,8 @@ help:
 	@echo "    make install-onnx  - Install ONNX Runtime + optimum into .venv"
 	@echo "    make export-onnx   - Export embedder to ONNX FP32 (ONNX_MODEL=... overridable, FORCE=1 to re-export)"
 	@echo "    make quantize-onnx - Quantize ONNX FP32 → INT8 dynamic (FORCE=1 to re-quantize)"
-	@echo "    make bench-embedder - Latency + throughput benchmark across 4 embedder backends"
+	@echo "    make bench-embedder - Latency + throughput benchmark across embedder backends (VERIFY=1 to check parity)"
+	@echo "    make bench-backends - Ollama vs vllm-metal generation latency (WARMUP=1 to discard a first run)"
 	@echo "    make export-torchscript - Trace bge backbone to TorchScript .pt (bench-only artifact)"
 	@echo ""
 	@echo "  RAG API:"
@@ -50,17 +56,24 @@ help:
 	@echo ""
 	@echo "  Indexing:"
 	@echo "    make fetch-docs    - Download FastAPI documentation"
-	@echo "    make index         - Run the indexing pipeline (incremental)"
+	@echo "    make index         - Index new/changed docs into the existing collection (idempotent)"
 	@echo "    make reindex       - Recreate the collection (CHUNK_SIZE=1024 CHUNK_OVERLAP=100 by default)"
 	@echo "    make reindex-onnx  - Reindex docsrag with ONNX FP32 backend (parity-equivalent to pytorch)"
 	@echo "    make reindex-int8  - Reindex docsrag_int8 with ONNX INT8 backend (separate collection)"
-	@echo "    make smoke         - Run a smoke retrieval test"
+	@echo "    make smoke         - Print the top retrieval results for a sample query"
+	@echo ""
+	@echo "  Evaluation:"
+	@echo "    make eval          - Run Ragas evaluation (CONFIG=configs/chunk_1024.yaml by default)"
+	@echo "    make mlflow-ui     - Open the MLflow UI"
+	@echo "    make prometheus-ui - Open the Prometheus UI"
+	@echo "    make grafana-ui    - Open the Grafana dashboard"
 	@echo ""
 	@echo "  Quality:"
-	@echo "    make lint          - Run ruff linter"
-	@echo "    make format        - Format code with ruff + black"
+	@echo "    make lint          - Run ruff check"
+	@echo "    make format        - Run all pre-commit hooks (ruff-check --fix, ruff-format, mypy)"
 	@echo "    make type-check    - Run mypy"
 	@echo "    make test          - Run pytest"
+	@echo "    make ci            - Run the full CI gate locally"
 	@echo ""
 	@echo "  Misc:"
 	@echo "    make clean         - Remove caches and build artifacts"
@@ -69,7 +82,10 @@ help:
 
 install:
 	uv venv --python 3.12
-	uv pip install -e ".[dev]"
+	uv pip install -e ".[dev,eval]"
+	@echo ""
+	@echo "✓ Installed. Activate the environment before running make targets that call python:"
+	@echo "    source .venv/bin/activate"
 
 # Lifecycle
 
@@ -121,7 +137,8 @@ VLLM_METAL_WHEEL ?= https://github.com/vllm-project/vllm-metal/releases/download
 # with no macOS wheels, so the install is two-phase — CPU requirements first
 # (substituting compatible versions), then vllm itself. uv's universal resolver
 # has no way to express that. CXXFLAGS works around a clang/parentheses warning
-# upgraded to error on macOS. Confirmed experimentally on branch `try-uv`.
+# that macOS upgrades to an error. Verified experimentally before settling on this
+# two-phase install.
 install-vllm:
 	@uname -sm | grep -q "Darwin arm64" || { echo "✗ macOS arm64 only"; exit 1; }
 	@test -n "$$VIRTUAL_ENV" || { echo "✗ Activate project venv first: source .venv/bin/activate"; exit 1; }
@@ -162,7 +179,8 @@ ONNX_MODEL ?= BAAI/bge-small-en-v1.5
 export-onnx:
 	@python scripts/export_onnx.py --model $(ONNX_MODEL) $(if $(FORCE),--force,)
 
-# Quantize the FP32 ONNX model to INT8 (dynamic, per-tensor).
+# Quantize the FP32 ONNX model to INT8 (dynamic, per-channel by default;
+# pass --per-tensor to the script for the alternative).
 # Default input: models/bge-small-en-v1.5-onnx-fp32/ → models/bge-small-en-v1.5-onnx-int8/.
 # Idempotent — pass FORCE=1 to re-quantize. Custom paths: use the script directly.
 quantize-onnx:
@@ -172,8 +190,14 @@ quantize-onnx:
 # Reports single-query p50/p95/p99 latency + throughput at batch sizes 1/8/32/128.
 # Adds a TorchScript-CPU row automatically if models/bge-small-en-v1.5.pt exists
 # (produced by `make export-torchscript`).
+# VERIFY=1 cross-checks each backend against PyTorch before timing it, so a row can
+# never silently measure a different embedding function.
 bench-embedder:
-	python benchmarks/bench_embedder.py
+	python -m benchmarks.bench_embedder $(if $(VERIFY),--verify-parity,)
+
+# Ollama vs vllm-metal generation latency. Both servers must be running.
+bench-backends:
+	python -m benchmarks.bench_backends $(if $(WARMUP),--warmup,)
 
 # Trace the bge backbone to TorchScript .pt — bench-only artifact.
 # Output: models/bge-small-en-v1.5.pt. Idempotent — pass FORCE=1 to re-trace.
@@ -206,46 +230,62 @@ fetch-docs:
 index:
 	python -m indexing.run_indexing
 
+# BM25 caches are keyed by collection; reindexing invalidates all of them.
+BM25_CACHE = data/bm25_index_*.json
+
 CHUNK_SIZE ?= 1024
 CHUNK_OVERLAP ?= 100
 
 reindex:
 	python -m indexing.run_indexing --recreate --chunk-size $(CHUNK_SIZE) --overlap $(CHUNK_OVERLAP)
-	rm -f data/bm25_index.pkl
+	rm -f $(BM25_CACHE)
 
 # Reindex with ONNX FP32 backend → docsrag collection (parity-equivalent to pytorch).
 # Drops + recreates docsrag. Safe to run while API serves at EMBEDDER_BACKEND=pytorch
 # since FP32 ONNX and PyTorch vectors are numerically identical.
 reindex-onnx:
 	EMBEDDER_BACKEND=onnx-fp32 python -m indexing.run_indexing --recreate --chunk-size $(CHUNK_SIZE) --overlap $(CHUNK_OVERLAP)
-	rm -f data/bm25_index.pkl
+	rm -f $(BM25_CACHE)
 
 # Reindex with ONNX INT8 backend → docsrag_int8 collection (separate index — vectors differ).
 # Creates docsrag_int8 fresh; doesn't touch docsrag.
 reindex-int8:
 	EMBEDDER_BACKEND=onnx-int8 python -m indexing.run_indexing --recreate --chunk-size $(CHUNK_SIZE) --overlap $(CHUNK_OVERLAP)
-	rm -f data/bm25_index.pkl
+	rm -f $(BM25_CACHE)
 
 smoke:
-	python -m indexing.smoke_test "how to define a path parameter in FastAPI"
+	python -m indexing.query_cli "how to define a path parameter in FastAPI"
 
-# Quality 
+# Quality
+
+lint:
+	ruff check .
+
+type-check:
+	mypy .
 
 format:
 	pre-commit run -a
 
 test:
-	pytest -v
+	pytest
+
+# The same gate CI runs, minus the Docker build.
+ci: lint type-check test
+	ruff format --check .
+	@echo "✓ All quality gates passed"
 
 # Evaluation
 
-CONFIG ?= configs/baseline.yaml
+# The frozen baseline; the 512-token configs are kept for reference only.
+MLFLOW_PORT ?= 5555
+CONFIG ?= configs/chunk_1024.yaml
 
 eval:
 	python evaluation/run_eval.py --config $(CONFIG)
 
 mlflow-ui:
-	@open http://localhost:5000 || xdg-open http://localhost:5000
+	@open http://localhost:$(MLFLOW_PORT) || xdg-open http://localhost:$(MLFLOW_PORT)
 
 prometheus-ui:
 	@open http://localhost:9090 || xdg-open http://localhost:9090
@@ -259,7 +299,7 @@ clean:
 	rm -rf .ruff_cache .mypy_cache .pytest_cache __pycache__ */__pycache__ */*/__pycache__
 	@echo "✓ Cleaned local caches"
 
-# Helpers 
+# Helpers
 
 # Safely JSON-quote a make variable: escape backslashes and double-quotes,
 # then wrap in double-quotes. Lets `make ask Q='...'` survive apostrophes,
